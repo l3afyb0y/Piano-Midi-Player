@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+*.sf2
+recordings/
+.idea/
+*.egg-info/
