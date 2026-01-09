@@ -19,6 +19,82 @@ class MainWindow(QMainWindow):
     save_wav = pyqtSignal(str)
     save_midi = pyqtSignal(str)
 
+    # Dark mode stylesheet
+    DARK_STYLE = """
+        QMainWindow, QWidget {
+            background-color: #1e1e1e;
+            color: #e0e0e0;
+        }
+        QGroupBox {
+            border: 1px solid #3a3a3a;
+            border-radius: 6px;
+            margin-top: 12px;
+            padding-top: 8px;
+            font-weight: bold;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            left: 10px;
+            padding: 0 5px;
+            color: #a0a0a0;
+        }
+        QPushButton {
+            background-color: #2d2d2d;
+            border: 1px solid #3a3a3a;
+            border-radius: 4px;
+            padding: 6px 12px;
+            color: #e0e0e0;
+        }
+        QPushButton:hover {
+            background-color: #3a3a3a;
+        }
+        QPushButton:pressed {
+            background-color: #4a4a4a;
+        }
+        QPushButton:checked {
+            background-color: #c0392b;
+            border-color: #e74c3c;
+        }
+        QPushButton:disabled {
+            background-color: #1a1a1a;
+            color: #606060;
+        }
+        QSlider::groove:horizontal {
+            border: 1px solid #3a3a3a;
+            height: 6px;
+            background: #2d2d2d;
+            border-radius: 3px;
+        }
+        QSlider::handle:horizontal {
+            background: #5dade2;
+            border: 1px solid #3498db;
+            width: 14px;
+            margin: -5px 0;
+            border-radius: 7px;
+        }
+        QSlider::sub-page:horizontal {
+            background: #3498db;
+            border-radius: 3px;
+        }
+        QComboBox {
+            background-color: #2d2d2d;
+            border: 1px solid #3a3a3a;
+            border-radius: 4px;
+            padding: 4px 8px;
+            color: #e0e0e0;
+        }
+        QComboBox::drop-down {
+            border: none;
+        }
+        QComboBox QAbstractItemView {
+            background-color: #2d2d2d;
+            selection-background-color: #3498db;
+        }
+        QLabel {
+            color: #e0e0e0;
+        }
+    """
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Piano Player")
@@ -29,6 +105,7 @@ class MainWindow(QMainWindow):
 
         self._setup_ui()
         self._setup_timer()
+        self._apply_dark_mode()
 
     def _setup_ui(self):
         """Create UI elements."""
@@ -128,6 +205,10 @@ class MainWindow(QMainWindow):
         """Setup timer for recording time display."""
         self._timer = QTimer()
         self._timer.timeout.connect(self._update_time)
+
+    def _apply_dark_mode(self):
+        """Apply dark mode stylesheet."""
+        self.setStyleSheet(self.DARK_STYLE)
 
     def _on_volume_changed(self, value: int):
         self._volume_label.setText(f"{value}%")
