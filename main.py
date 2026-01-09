@@ -2,6 +2,7 @@
 """Piano Player - MIDI to audio application."""
 
 import sys
+import os
 import tempfile
 import shutil
 from PyQt6.QtWidgets import QApplication
@@ -14,6 +15,9 @@ from midi.input import MidiInputThread, MidiMessage
 from midi.recorder import MidiRecorder
 from recording.wav_recorder import WavRecorder
 
+# Default SoundFont path
+DEFAULT_SOUNDFONT = "/usr/share/soundfonts/FluidR3_GM.sf2"
+
 
 class PianoPlayer(QObject):
     """Main application controller."""
@@ -24,8 +28,8 @@ class PianoPlayer(QObject):
     def __init__(self):
         super().__init__()
 
-        # Create components
-        self._synth = SimpleSynth()
+        # Create components - try SoundFont first, fall back to simple synth
+        self._synth = self._create_default_synth()
         self._engine = AudioEngine()
         self._engine.set_synth(self._synth)
 
@@ -51,6 +55,21 @@ class PianoPlayer(QObject):
         # Update MIDI status
         if self._midi_thread.connected_port:
             self._window.set_midi_status(True, self._midi_thread.connected_port)
+
+    def _create_default_synth(self):
+        """Create default synthesizer - SoundFont if available, else simple synth."""
+        if os.path.exists(DEFAULT_SOUNDFONT):
+            try:
+                from audio.soundfont_synth import SoundFontSynth
+                sf_synth = SoundFontSynth()
+                if sf_synth.load_soundfont(DEFAULT_SOUNDFONT):
+                    print(f"Using SoundFont: {DEFAULT_SOUNDFONT}")
+                    return sf_synth
+            except Exception as e:
+                print(f"Could not load SoundFont: {e}")
+
+        print("Using simple synthesizer")
+        return SimpleSynth()
 
     def _connect_signals(self):
         """Connect UI signals to handlers."""
