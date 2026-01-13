@@ -6,3 +6,6 @@ recordings/
 .idea/
 *.egg-info/
 .worktrees/
+build/
+dist/
+*.spec
