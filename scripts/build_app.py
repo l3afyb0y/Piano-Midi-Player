@@ -18,6 +18,26 @@ def build():
         separator = ";" if sys.platform.startswith("win") else ":"
         data_args = ["--add-data", f"{soundfonts_dir}{separator}soundfonts"]
 
+    paths_args = []
+    venv_cfg = root / ".venv" / "pyvenv.cfg"
+    if venv_cfg.exists():
+        venv_version = None
+        for line in venv_cfg.read_text(encoding="utf-8").splitlines():
+            if line.startswith("version"):
+                _, venv_version = line.split("=", 1)
+                venv_version = venv_version.strip()
+                break
+        if venv_version:
+            major_minor = ".".join(venv_version.split(".")[:2])
+            site_packages = root / ".venv" / "lib" / f"python{major_minor}" / "site-packages"
+            if site_packages.exists():
+                paths_args.extend(["--paths", str(site_packages)])
+
+    hidden_imports = ["PyQt6.sip"]
+    hidden_args = []
+    for hidden in hidden_imports:
+        hidden_args.extend(["--hidden-import", hidden])
+
     cmd = [
         sys.executable,
         "-m",
@@ -26,6 +46,8 @@ def build():
         "--windowed",
         "--name",
         app_name,
+        *paths_args,
+        *hidden_args,
         *data_args,
         str(root / "main.py"),
     ]
