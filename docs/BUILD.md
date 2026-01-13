@@ -31,4 +31,4 @@ Output goes to `dist/`:
 ## Programs list
 - Windows: create a Start Menu shortcut to the built `.exe` (or wrap it in an installer).
 - macOS: move `Piano Player.app` into `/Applications`.
-- Linux: create a `.desktop` entry pointing to the built binary.
+- Linux: run `bash scripts/install_desktop.sh` to install a `.desktop` entry and launcher.

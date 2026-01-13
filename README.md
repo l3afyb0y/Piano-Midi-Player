@@ -69,6 +69,12 @@ python main.py
 ## Build app
 See `docs/BUILD.md` for PyInstaller build steps.
 
+## Desktop launcher (Linux)
+Run the installer to create a launcher that rebuilds the app when sources change:
+```bash
+bash scripts/install_desktop.sh
+```
+
 ## Project layout
 - `main.py`: app entry point
 - `audio/`: audio engine and synths

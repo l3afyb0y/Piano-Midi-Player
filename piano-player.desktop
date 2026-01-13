@@ -2,7 +2,7 @@
 Type=Application
 Name=Piano Player
 Comment=Play and edit MIDI files with a piano roll
-# Update Exec/Icon to match your install path or rename the binary to piano-player.
+# Run scripts/install_desktop.sh to set Exec to your launcher path.
 Exec=piano-player
 Icon=piano-player
 Terminal=false
