@@ -5,6 +5,7 @@ import sys
 import os
 import tempfile
 import shutil
+from pathlib import Path
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QObject, pyqtSignal
 
@@ -17,8 +18,31 @@ from midi.input import MidiInputThread, MidiMessage
 from midi.recorder import MidiRecorder
 from recording.wav_recorder import WavRecorder
 
-# Default SoundFont path
-DEFAULT_SOUNDFONT = "/usr/share/soundfonts/FluidR3_GM.sf2"
+PROJECT_DIR = Path(__file__).resolve().parent
+SOUNDFONTS_DIR = PROJECT_DIR / "soundfonts"
+DEFAULT_SOUNDFONT_LOCATIONS = [
+    os.environ.get("PIANO_PLAYER_SOUNDFONT"),
+    os.environ.get("SOUNDFONT_PATH"),
+    str(SOUNDFONTS_DIR / "default.sf2"),
+    str(SOUNDFONTS_DIR / "FluidR3_GM.sf2"),
+    "/usr/share/soundfonts/FluidR3_GM.sf2",
+    "/usr/share/sounds/sf2/FluidR3_GM.sf2",
+    "/usr/share/sounds/sf2/TimGM6mb.sf2",
+    "/Library/Audio/Sounds/Banks/FluidR3_GM.sf2",
+]
+
+
+def find_default_soundfont() -> str | None:
+    """Return a usable SoundFont path if one is available."""
+    for candidate in DEFAULT_SOUNDFONT_LOCATIONS:
+        if candidate and os.path.exists(candidate):
+            return candidate
+
+    if SOUNDFONTS_DIR.is_dir():
+        for path in sorted(SOUNDFONTS_DIR.glob("*.sf2")):
+            return str(path)
+
+    return None
 
 
 class PianoPlayer(QObject):
@@ -71,14 +95,15 @@ class PianoPlayer(QObject):
 
     def _create_default_synth(self):
         """Create default synthesizer - SoundFont if available, else simple synth."""
-        if os.path.exists(DEFAULT_SOUNDFONT):
+        default_soundfont = find_default_soundfont()
+        if default_soundfont:
             try:
                 from audio.soundfont_synth import SoundFontSynth
                 sf_synth = SoundFontSynth()
-                if sf_synth.load_soundfont(DEFAULT_SOUNDFONT):
-                    self._soundfont_path = DEFAULT_SOUNDFONT
+                if sf_synth.load_soundfont(default_soundfont):
+                    self._soundfont_path = default_soundfont
                     self._synth_name = "SoundFont"
-                    print(f"Using SoundFont: {DEFAULT_SOUNDFONT}")
+                    print(f"Using SoundFont: {default_soundfont}")
                     return sf_synth
             except Exception as e:
                 print(f"Could not load SoundFont: {e}")
@@ -196,8 +221,8 @@ class PianoPlayer(QObject):
             if hasattr(self._synth, "_fs"):
                 return
             soundfont_path = self._soundfont_path
-            if soundfont_path is None and os.path.exists(DEFAULT_SOUNDFONT):
-                soundfont_path = DEFAULT_SOUNDFONT
+            if soundfont_path is None:
+                soundfont_path = find_default_soundfont()
             if soundfont_path and self._load_soundfont(soundfont_path):
                 return
             print("SoundFont selected but no file is loaded yet.")
