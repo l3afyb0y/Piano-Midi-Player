@@ -329,6 +329,8 @@ class MainWindow(QMainWindow):
         # Falling notes visualization (above keyboard for visual flow)
         notes_group = QGroupBox("Piano Roll")
         notes_layout = QVBoxLayout(notes_group)
+        notes_layout.setContentsMargins(8, 16, 8, 0)
+        notes_layout.setSpacing(6)
 
         roll_controls = QHBoxLayout()
         self._grid_check = QCheckBox("Grid")
@@ -357,14 +359,16 @@ class MainWindow(QMainWindow):
         self._falling_notes.set_grid_enabled(self._grid_check.isChecked())
         self._falling_notes.set_snap_division(self._snap_combo.currentData())
         notes_layout.addWidget(self._falling_notes)
-        layout.addWidget(notes_group, stretch=1)  # Let this expand
+        roll_container = QWidget()
+        roll_layout = QVBoxLayout(roll_container)
+        roll_layout.setContentsMargins(0, 0, 0, 0)
+        roll_layout.setSpacing(0)
+        roll_layout.addWidget(notes_group, stretch=1)
 
         # Keyboard visualization (below falling notes)
-        keyboard_group = QGroupBox("Keyboard")
-        keyboard_layout = QVBoxLayout(keyboard_group)
         self._keyboard = KeyboardWidget()
-        keyboard_layout.addWidget(self._keyboard)
-        layout.addWidget(keyboard_group)
+        roll_layout.addWidget(self._keyboard)
+        layout.addWidget(roll_container, stretch=1)  # Let this expand
 
         # Connect falling notes time updates and keyboard visualization
         self._falling_notes.time_changed.connect(self._on_time_changed)

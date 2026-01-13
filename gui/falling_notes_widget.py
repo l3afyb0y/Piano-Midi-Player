@@ -262,10 +262,10 @@ class FallingNotesWidget(QWidget):
     def _pixels_per_second(self, height: int) -> float:
         if self._visible_seconds <= 0:
             return 1.0
-        return (height - 40) / self._visible_seconds
+        return max(1.0, (height - 20) / self._visible_seconds)
 
     def _now_y(self, height: int) -> float:
-        return height - 20
+        return max(0.0, height - 1)
 
     def _time_to_y(self, time_value: float, height: int) -> float:
         pixels_per_second = self._pixels_per_second(height)
