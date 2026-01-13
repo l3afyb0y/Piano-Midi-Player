@@ -23,6 +23,10 @@ pip install -r requirements-dev.txt
 python scripts/build_app.py
 ```
 
+Notes:
+- If you installed app deps in `.venv`, the build script will pull them in automatically.
+- Using system PyInstaller (e.g., from `pacman`) is fine as long as runtime libs are installed.
+
 Output goes to `dist/`:
 - Windows: `dist/Piano Player/Piano Player.exe`
 - macOS: `dist/Piano Player.app`

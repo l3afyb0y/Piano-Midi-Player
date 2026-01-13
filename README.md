@@ -66,6 +66,11 @@ python main.py
 - Use **Save MIDI...** to export the edited result.
 - Recording starts at the current timeline position and merges into the piano roll.
 
+## Recording (DAW-style)
+- Enable **Count-in** to get a pre-roll before recording (uses the metronome BPM).
+- If a MIDI is loaded and not playing, recording auto-starts playback for overdub timing.
+- Stop ends recording and merges new notes into the piano roll.
+
 ## MIDI library
 - On first launch the app creates `~/midi` if it doesn't exist.
 - Use **Set MIDI Folder...** to point the library to a different directory.
@@ -79,6 +84,9 @@ Run the installer to create a launcher that rebuilds the app when sources change
 ```bash
 bash scripts/install_desktop.sh
 ```
+
+## Docs
+See `docs/README.md` for build and design references.
 
 ## Project layout
 - `main.py`: app entry point
