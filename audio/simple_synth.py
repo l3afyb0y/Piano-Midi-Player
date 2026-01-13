@@ -1,5 +1,6 @@
 """Simple additive synthesizer with ADSR envelope."""
 
+import threading
 import numpy as np
 from dataclasses import dataclass
 from typing import Dict
@@ -38,60 +39,70 @@ class SimpleSynth:
         self._notes: Dict[int, Note] = {}
         self._sustain = False
         self._sustained_notes: set = set()
+        self._lock = threading.Lock()
 
     def note_on(self, note_number: int, velocity: int):
         """Start playing a note."""
         frequency = 440.0 * (2.0 ** ((note_number - 69) / 12.0))
-        self._notes[note_number] = Note(
-            frequency=frequency,
-            velocity=velocity / 127.0,
-            phase=0.0,
-            envelope=0.0,
-            stage="attack",
-            released=False,
-        )
+        with self._lock:
+            self._notes[note_number] = Note(
+                frequency=frequency,
+                velocity=velocity / 127.0,
+                phase=0.0,
+                envelope=0.0,
+                stage="attack",
+                released=False,
+            )
 
     def note_off(self, note_number: int):
         """Release a note (or hold if sustain is on)."""
-        if note_number in self._notes:
-            if self._sustain:
-                self._sustained_notes.add(note_number)
-            else:
-                self._notes[note_number].released = True
-                self._notes[note_number].stage = "release"
+        with self._lock:
+            if note_number in self._notes:
+                if self._sustain:
+                    self._sustained_notes.add(note_number)
+                else:
+                    self._notes[note_number].released = True
+                    self._notes[note_number].stage = "release"
 
     def sustain_on(self):
         """Enable sustain pedal."""
-        self._sustain = True
+        with self._lock:
+            self._sustain = True
 
     def sustain_off(self):
         """Disable sustain pedal and release held notes."""
-        self._sustain = False
-        for note_num in self._sustained_notes:
-            if note_num in self._notes:
-                self._notes[note_num].released = True
-                self._notes[note_num].stage = "release"
-        self._sustained_notes.clear()
+        with self._lock:
+            self._sustain = False
+            for note_num in self._sustained_notes:
+                if note_num in self._notes:
+                    self._notes[note_num].released = True
+                    self._notes[note_num].stage = "release"
+            self._sustained_notes.clear()
 
     def generate(self, num_samples: int) -> np.ndarray:
         """Generate audio samples."""
-        buffer = np.zeros(num_samples, dtype=np.float32)
+        with self._lock:
+            buffer = np.zeros(num_samples, dtype=np.float32)
+            notes_to_remove = []
 
-        notes_to_remove = []
+            for note_num, note in self._notes.items():
+                note_buffer = self._generate_note(note, num_samples)
+                buffer += note_buffer
 
-        for note_num, note in self._notes.items():
-            note_buffer = self._generate_note(note, num_samples)
-            buffer += note_buffer
+                if note.stage == "off":
+                    notes_to_remove.append(note_num)
 
-            if note.stage == "off":
-                notes_to_remove.append(note_num)
+            for note_num in notes_to_remove:
+                del self._notes[note_num]
 
-        for note_num in notes_to_remove:
-            del self._notes[note_num]
+            # Soft clip to prevent harsh distortion
+            buffer = np.tanh(buffer)
+            return buffer
 
-        # Soft clip to prevent harsh distortion
-        buffer = np.tanh(buffer)
-        return buffer
+    def active_notes_count(self) -> int:
+        """Return number of currently active notes."""
+        with self._lock:
+            return len(self._notes)
 
     def _generate_note(self, note: Note, num_samples: int) -> np.ndarray:
         """Generate samples for a single note with envelope."""

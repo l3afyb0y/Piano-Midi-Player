@@ -2,8 +2,6 @@
 
 from dataclasses import dataclass
 from typing import Optional, Any, List, Callable
-import threading
-import time
 
 
 @dataclass
@@ -40,13 +38,11 @@ def parse_midi_message(data: List[int]) -> MidiMessage:
     return MidiMessage(type="unknown")
 
 
-class MidiInputThread(threading.Thread):
-    """Thread that reads MIDI input and emits callbacks."""
+class MidiInputHandler:
+    """Low-latency MIDI input using rtmidi's native callback."""
 
     def __init__(self, port_name: Optional[str] = None):
-        super().__init__(daemon=True)
         self._port_name = port_name
-        self._running = False
         self._callbacks: List[Callable[[MidiMessage], None]] = []
         self._midi_in = None
         self._connected_port: Optional[str] = None
@@ -60,8 +56,16 @@ class MidiInputThread(threading.Thread):
         """Return name of connected MIDI port."""
         return self._connected_port
 
-    def run(self):
-        """Main thread loop - reads MIDI and dispatches callbacks."""
+    def _midi_callback(self, event, data=None):
+        """Called directly by rtmidi when MIDI data arrives - lowest latency."""
+        midi_data, delta_time = event
+        parsed = parse_midi_message(midi_data)
+        if parsed.type != "unknown":
+            for callback in self._callbacks:
+                callback(parsed)
+
+    def start(self):
+        """Start MIDI input with native callback."""
         import rtmidi
 
         self._midi_in = rtmidi.MidiIn()
@@ -97,21 +101,13 @@ class MidiInputThread(threading.Thread):
         self._connected_port = ports[port_index]
         print(f"Opened MIDI port: {self._connected_port}")
 
-        self._running = True
-        while self._running:
-            msg = self._midi_in.get_message()
-            if msg:
-                data, _ = msg
-                parsed = parse_midi_message(data)
-                for callback in self._callbacks:
-                    callback(parsed)
-            else:
-                time.sleep(0.001)  # Small sleep to prevent busy waiting
+        # Use rtmidi's native callback - called directly from MIDI thread
+        self._midi_in.set_callback(self._midi_callback)
 
     def stop(self):
-        """Stop the MIDI input thread."""
-        self._running = False
+        """Stop MIDI input."""
         if self._midi_in:
+            self._midi_in.cancel_callback()
             self._midi_in.close_port()
 
     @staticmethod
@@ -120,3 +116,7 @@ class MidiInputThread(threading.Thread):
         import rtmidi
         midi_in = rtmidi.MidiIn()
         return midi_in.get_ports()
+
+
+# Backwards compatibility alias
+MidiInputThread = MidiInputHandler

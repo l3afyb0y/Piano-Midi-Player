@@ -3,9 +3,11 @@
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QSlider, QLabel, QPushButton, QComboBox,
-    QFileDialog
+    QFileDialog, QSpinBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
+from gui.keyboard_widget import KeyboardWidget
+from gui.falling_notes_widget import FallingNotesWidget, NoteEvent, SustainEvent
 
 
 class MainWindow(QMainWindow):
@@ -18,6 +20,9 @@ class MainWindow(QMainWindow):
     record_toggled = pyqtSignal(bool)
     save_wav = pyqtSignal(str)
     save_midi = pyqtSignal(str)
+    play_recording = pyqtSignal()  # Request to play back the recording
+    metronome_toggled = pyqtSignal(bool)  # Metronome on/off
+    metronome_bpm_changed = pyqtSignal(int)  # BPM changed
 
     # Dark mode stylesheet
     DARK_STYLE = """
@@ -113,7 +118,25 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
 
-        # Top row: Audio + Synthesizer
+        # Status bar at top
+        status_group = QGroupBox("Status")
+        status_layout = QHBoxLayout(status_group)
+
+        self._midi_status = QLabel("MIDI: Not connected")
+        status_layout.addWidget(self._midi_status)
+
+        self._audio_status = QLabel("Audio: Ready")
+        status_layout.addWidget(self._audio_status)
+
+        self._sustain_status = QLabel("Sustain: Off")
+        status_layout.addWidget(self._sustain_status)
+
+        self._notes_status = QLabel("Notes: 0")
+        status_layout.addWidget(self._notes_status)
+
+        layout.addWidget(status_group)
+
+        # Controls row: Audio + Synthesizer
         top_row = QHBoxLayout()
         layout.addLayout(top_row)
 
@@ -148,58 +171,102 @@ class MainWindow(QMainWindow):
         self._soundfont_btn.setEnabled(False)
         synth_layout.addWidget(self._soundfont_btn)
 
+        # Metronome controls
+        metro_layout = QHBoxLayout()
+        self._metro_btn = QPushButton("Metronome")
+        self._metro_btn.setCheckable(True)
+        self._metro_btn.clicked.connect(self._on_metronome_toggled)
+        metro_layout.addWidget(self._metro_btn)
+
+        self._bpm_spin = QSpinBox()
+        self._bpm_spin.setRange(20, 300)
+        self._bpm_spin.setValue(120)
+        self._bpm_spin.setSuffix(" BPM")
+        self._bpm_spin.valueChanged.connect(self._on_bpm_changed)
+        metro_layout.addWidget(self._bpm_spin)
+
+        synth_layout.addLayout(metro_layout)
+
         top_row.addWidget(synth_group)
 
         # Recording group
         record_group = QGroupBox("Recording")
-        record_layout = QHBoxLayout(record_group)
+        record_main_layout = QVBoxLayout(record_group)
+
+        # Controls row
+        record_controls = QHBoxLayout()
+        record_main_layout.addLayout(record_controls)
 
         self._record_btn = QPushButton("Record")
         self._record_btn.setCheckable(True)
         self._record_btn.clicked.connect(self._on_record_toggled)
-        record_layout.addWidget(self._record_btn)
+        record_controls.addWidget(self._record_btn)
 
         self._stop_btn = QPushButton("Stop")
         self._stop_btn.clicked.connect(self._on_stop_recording)
         self._stop_btn.setEnabled(False)
-        record_layout.addWidget(self._stop_btn)
+        record_controls.addWidget(self._stop_btn)
 
         self._time_label = QLabel("00:00")
         self._time_label.setMinimumWidth(50)
-        record_layout.addWidget(self._time_label)
+        record_controls.addWidget(self._time_label)
 
         self._save_wav_btn = QPushButton("Save WAV")
         self._save_wav_btn.clicked.connect(self._on_save_wav)
         self._save_wav_btn.setEnabled(False)
-        record_layout.addWidget(self._save_wav_btn)
+        record_controls.addWidget(self._save_wav_btn)
 
         self._save_midi_btn = QPushButton("Save MIDI")
         self._save_midi_btn.clicked.connect(self._on_save_midi)
         self._save_midi_btn.setEnabled(False)
-        record_layout.addWidget(self._save_midi_btn)
+        record_controls.addWidget(self._save_midi_btn)
+
+        self._play_btn = QPushButton("Play")
+        self._play_btn.clicked.connect(self._on_play_recording)
+        self._play_btn.setEnabled(False)
+        record_controls.addWidget(self._play_btn)
+
+        # Timeline slider row
+        timeline_layout = QHBoxLayout()
+        self._timeline_label = QLabel("0:00")
+        self._timeline_label.setMinimumWidth(40)
+        timeline_layout.addWidget(self._timeline_label)
+
+        self._timeline_slider = QSlider(Qt.Orientation.Horizontal)
+        self._timeline_slider.setRange(0, 1000)
+        self._timeline_slider.setValue(0)
+        self._timeline_slider.sliderMoved.connect(self._on_timeline_seek)
+        self._timeline_slider.sliderPressed.connect(self._on_timeline_pressed)
+        self._timeline_slider.sliderReleased.connect(self._on_timeline_released)
+        timeline_layout.addWidget(self._timeline_slider)
+
+        self._duration_label = QLabel("0:00")
+        self._duration_label.setMinimumWidth(40)
+        timeline_layout.addWidget(self._duration_label)
+
+        record_main_layout.addLayout(timeline_layout)
 
         layout.addWidget(record_group)
 
-        # Status group
-        status_group = QGroupBox("Status")
-        status_layout = QHBoxLayout(status_group)
+        # Falling notes visualization (above keyboard for visual flow)
+        notes_group = QGroupBox("Piano Roll")
+        notes_layout = QVBoxLayout(notes_group)
+        self._falling_notes = FallingNotesWidget()
+        notes_layout.addWidget(self._falling_notes)
+        layout.addWidget(notes_group, stretch=1)  # Let this expand
 
-        self._midi_status = QLabel("MIDI: Not connected")
-        status_layout.addWidget(self._midi_status)
+        # Keyboard visualization (below falling notes)
+        keyboard_group = QGroupBox("Keyboard")
+        keyboard_layout = QVBoxLayout(keyboard_group)
+        self._keyboard = KeyboardWidget()
+        keyboard_layout.addWidget(self._keyboard)
+        layout.addWidget(keyboard_group)
 
-        self._audio_status = QLabel("Audio: Ready")
-        status_layout.addWidget(self._audio_status)
-
-        self._sustain_status = QLabel("Sustain: Off")
-        status_layout.addWidget(self._sustain_status)
-
-        self._notes_status = QLabel("Notes: 0")
-        status_layout.addWidget(self._notes_status)
-
-        layout.addWidget(status_group)
-
-        # Add stretch to push everything up
-        layout.addStretch()
+        # Connect falling notes time updates and keyboard visualization
+        self._falling_notes.time_changed.connect(self._on_time_changed)
+        self._falling_notes.note_triggered.connect(self._keyboard.note_on)
+        self._falling_notes.note_released.connect(self._keyboard.note_off)
+        self._slider_dragging = False
 
     def _setup_timer(self):
         """Setup timer for recording time display."""
@@ -225,21 +292,26 @@ class MainWindow(QMainWindow):
         if path:
             self.soundfont_loaded.emit(path)
 
+    def _on_metronome_toggled(self, checked: bool):
+        self._metro_btn.setText("Metronome On" if checked else "Metronome")
+        self.metronome_toggled.emit(checked)
+
+    def _on_bpm_changed(self, value: int):
+        self.metronome_bpm_changed.emit(value)
+
     def _on_record_toggled(self, checked: bool):
-        self._recording = checked
-        self._record_btn.setText("Recording..." if checked else "Record")
-        self._stop_btn.setEnabled(checked)
-        if checked:
-            self._record_time = 0
-            self._timer.start(1000)
+        self._set_recording_state(checked)
         self.record_toggled.emit(checked)
 
     def _on_stop_recording(self):
         self._record_btn.setChecked(False)
-        self._on_record_toggled(False)
-        self._timer.stop()
-        self._save_wav_btn.setEnabled(True)
-        self._save_midi_btn.setEnabled(True)
+
+    def _on_play_recording(self):
+        if self._falling_notes.is_playing():
+            self._falling_notes.stop()
+            self._play_btn.setText("Play")
+        else:
+            self.play_recording.emit()
 
     def _on_save_wav(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -261,7 +333,71 @@ class MainWindow(QMainWindow):
         secs = self._record_time % 60
         self._time_label.setText(f"{mins:02d}:{secs:02d}")
 
+    def _set_recording_state(self, recording: bool):
+        """Update recording UI state."""
+        self._recording = recording
+        self._record_btn.setText("Recording..." if recording else "Record")
+        self._stop_btn.setEnabled(recording)
+        if recording:
+            self._record_time = 0
+            self._time_label.setText("00:00")
+            self._timer.start(1000)
+            self._save_wav_btn.setEnabled(False)
+            self._save_midi_btn.setEnabled(False)
+            self._play_btn.setEnabled(False)
+        else:
+            self._timer.stop()
+            self._save_wav_btn.setEnabled(True)
+            self._save_midi_btn.setEnabled(True)
+            self._play_btn.setEnabled(True)
+
+    def _on_timeline_seek(self, value: int):
+        """Handle timeline slider drag."""
+        duration = self._falling_notes.get_duration()
+        if duration > 0:
+            time_seconds = (value / 1000.0) * duration
+            self._falling_notes.seek(time_seconds)
+
+    def _on_timeline_pressed(self):
+        """Handle slider press - pause updates."""
+        self._slider_dragging = True
+
+    def _on_timeline_released(self):
+        """Handle slider release - resume updates."""
+        self._slider_dragging = False
+        self._on_time_changed(self._falling_notes.get_current_time())
+
+    def _on_time_changed(self, time_seconds: float):
+        """Update slider and label when playback time changes."""
+        if self._slider_dragging:
+            return  # Don't update while user is dragging
+
+        duration = self._falling_notes.get_duration()
+        if duration > 0:
+            slider_value = int((time_seconds / duration) * 1000)
+            self._timeline_slider.setValue(slider_value)
+
+        mins = int(time_seconds) // 60
+        secs = int(time_seconds) % 60
+        self._timeline_label.setText(f"{mins}:{secs:02d}")
+
+    def _format_time(self, seconds: float) -> str:
+        """Format seconds as M:SS."""
+        mins = int(seconds) // 60
+        secs = int(seconds) % 60
+        return f"{mins}:{secs:02d}"
+
     # Public methods to update status
+    def set_synth_selection(self, name: str):
+        """Set synth selection without emitting change signals."""
+        index = self._synth_combo.findText(name)
+        if index < 0:
+            return
+        self._synth_combo.blockSignals(True)
+        self._synth_combo.setCurrentIndex(index)
+        self._synth_combo.blockSignals(False)
+        self._soundfont_btn.setEnabled(name == "SoundFont")
+
     def set_midi_status(self, connected: bool, name: str = ""):
         if connected:
             self._midi_status.setText(f"MIDI: {name}")
@@ -273,3 +409,35 @@ class MainWindow(QMainWindow):
 
     def set_notes_count(self, count: int):
         self._notes_status.setText(f"Notes: {count}")
+
+    def keyboard_note_on(self, note: int, velocity: int):
+        """Update keyboard visualization on note press."""
+        self._keyboard.note_on(note, velocity)
+
+    def keyboard_note_off(self, note: int):
+        """Update keyboard visualization on note release."""
+        self._keyboard.note_off(note)
+
+    def load_recording(self, events: list[NoteEvent], sustain_events: list[SustainEvent] | None = None):
+        """Load recorded notes into the falling notes display."""
+        self._falling_notes.load_events(events, sustain_events)
+        # Update duration label
+        duration = self._falling_notes.get_duration()
+        self._duration_label.setText(self._format_time(duration))
+        self._timeline_slider.setValue(0)
+        self._timeline_label.setText("0:00")
+
+    def start_playback(self):
+        """Start falling notes playback."""
+        self._falling_notes.play()
+        self._play_btn.setText("Stop" if self._falling_notes.is_playing() else "Play")
+
+    def stop_playback(self):
+        """Stop falling notes playback."""
+        self._falling_notes.stop()
+        self._play_btn.setText("Play")
+
+    @property
+    def falling_notes(self) -> FallingNotesWidget:
+        """Access to falling notes widget for signal connections."""
+        return self._falling_notes

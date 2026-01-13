@@ -1,5 +1,6 @@
 """SoundFont synthesizer using FluidSynth."""
 
+import threading
 import numpy as np
 from typing import Optional
 
@@ -20,8 +21,14 @@ class SoundFontSynth:
         self.sample_rate = sample_rate
         self._fs = fluidsynth.Synth(samplerate=float(sample_rate))
         self._sfid: Optional[int] = None
-        # Start in audio mode (not using its own audio driver)
-        self._fs.setting('synth.gain', 0.6)
+        self._notes: set = set()  # Track active notes for UI
+        self._notes_lock = threading.Lock()
+        # Not using FluidSynth's own audio driver - we pull samples manually
+        # Gain range is 0.0-10.0, default is 0.2 which is very quiet
+        self._fs.setting('synth.gain', 2.0)
+        # Tune internal buffers for smoother generation
+        self._fs.setting('synth.polyphony', 64)  # Limit simultaneous voices
+        self._fs.setting('synth.cpu-cores', 2)  # Use multiple cores if available
 
     def load_soundfont(self, path: str) -> bool:
         """Load a SoundFont file. Returns True on success."""
@@ -30,6 +37,8 @@ class SoundFontSynth:
                 self._fs.sfunload(self._sfid)
             self._sfid = self._fs.sfload(path)
             self._fs.program_select(0, self._sfid, 0, 0)  # Channel 0, bank 0, preset 0 (piano)
+            # Set up channel 9 for GM drums (bank 128 = percussion)
+            self._fs.program_select(9, self._sfid, 128, 0)
             print(f"Loaded SoundFont: {path}")
             return True
         except Exception as e:
@@ -39,10 +48,14 @@ class SoundFontSynth:
     def note_on(self, note: int, velocity: int):
         """Start playing a note."""
         self._fs.noteon(0, note, velocity)
+        with self._notes_lock:
+            self._notes.add(note)
 
     def note_off(self, note: int):
         """Stop playing a note."""
         self._fs.noteoff(0, note)
+        with self._notes_lock:
+            self._notes.discard(note)
 
     def sustain_on(self):
         """Enable sustain pedal."""
@@ -68,3 +81,8 @@ class SoundFontSynth:
         if self._sfid is not None:
             self._fs.sfunload(self._sfid)
         self._fs.delete()
+
+    def active_notes_count(self) -> int:
+        """Return number of currently active notes."""
+        with self._notes_lock:
+            return len(self._notes)
