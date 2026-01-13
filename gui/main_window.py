@@ -4,7 +4,8 @@ import os
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QSlider, QLabel, QPushButton, QComboBox,
-    QFileDialog, QSpinBox, QListWidget, QListWidgetItem, QAbstractItemView
+    QFileDialog, QSpinBox, QListWidget, QListWidgetItem, QAbstractItemView,
+    QCheckBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from gui.keyboard_widget import KeyboardWidget
@@ -29,6 +30,11 @@ class MainWindow(QMainWindow):
     play_recording = pyqtSignal()  # Request to play back the recording
     metronome_toggled = pyqtSignal(bool)  # Metronome on/off
     metronome_bpm_changed = pyqtSignal(int)  # BPM changed
+    count_in_enabled_changed = pyqtSignal(bool)
+    count_in_beats_changed = pyqtSignal(int)
+    snap_enabled_changed = pyqtSignal(bool)
+    grid_enabled_changed = pyqtSignal(bool)
+    snap_division_changed = pyqtSignal(int)
 
     # Dark mode stylesheet
     DARK_STYLE = """
@@ -112,6 +118,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(500, 300)
 
         self._recording = False
+        self._count_in_active = False
         self._record_time = 0
         self._midi_file_path: str | None = None
         self._midi_dir: str | None = None
@@ -254,7 +261,7 @@ class MainWindow(QMainWindow):
 
         self._record_btn = QPushButton("Record")
         self._record_btn.setCheckable(True)
-        self._record_btn.clicked.connect(self._on_record_toggled)
+        self._record_btn.toggled.connect(self._on_record_toggled)
         record_controls.addWidget(self._record_btn)
 
         self._stop_btn = QPushButton("Stop")
@@ -281,6 +288,22 @@ class MainWindow(QMainWindow):
         self._play_btn.setEnabled(False)
         record_controls.addWidget(self._play_btn)
 
+        # Count-in controls
+        count_in_layout = QHBoxLayout()
+        self._count_in_check = QCheckBox("Count-in")
+        self._count_in_check.toggled.connect(self._on_count_in_toggled)
+        count_in_layout.addWidget(self._count_in_check)
+
+        self._count_in_spin = QSpinBox()
+        self._count_in_spin.setRange(1, 8)
+        self._count_in_spin.setValue(4)
+        self._count_in_spin.setSuffix(" beats")
+        self._count_in_spin.setEnabled(False)
+        self._count_in_spin.valueChanged.connect(self._on_count_in_beats_changed)
+        count_in_layout.addWidget(self._count_in_spin)
+        count_in_layout.addStretch(1)
+        record_main_layout.addLayout(count_in_layout)
+
         # Timeline slider row
         timeline_layout = QHBoxLayout()
         self._timeline_label = QLabel("0:00")
@@ -306,7 +329,33 @@ class MainWindow(QMainWindow):
         # Falling notes visualization (above keyboard for visual flow)
         notes_group = QGroupBox("Piano Roll")
         notes_layout = QVBoxLayout(notes_group)
+
+        roll_controls = QHBoxLayout()
+        self._grid_check = QCheckBox("Grid")
+        self._grid_check.setChecked(True)
+        self._grid_check.toggled.connect(self._on_grid_toggled)
+        roll_controls.addWidget(self._grid_check)
+
+        self._snap_check = QCheckBox("Snap")
+        self._snap_check.setChecked(True)
+        self._snap_check.toggled.connect(self._on_snap_toggled)
+        roll_controls.addWidget(self._snap_check)
+
+        self._snap_combo = QComboBox()
+        snap_options = [("1/4", 1), ("1/8", 2), ("1/16", 4), ("1/32", 8)]
+        for label, value in snap_options:
+            self._snap_combo.addItem(label, value)
+        self._snap_combo.setCurrentIndex(2)
+        self._snap_combo.currentIndexChanged.connect(self._on_snap_division_changed)
+        roll_controls.addWidget(self._snap_combo)
+        roll_controls.addStretch(1)
+        notes_layout.addLayout(roll_controls)
+
         self._falling_notes = FallingNotesWidget()
+        self._falling_notes.set_bpm(self._bpm_spin.value())
+        self._falling_notes.set_snap_enabled(self._snap_check.isChecked())
+        self._falling_notes.set_grid_enabled(self._grid_check.isChecked())
+        self._falling_notes.set_snap_division(self._snap_combo.currentData())
         notes_layout.addWidget(self._falling_notes)
         layout.addWidget(notes_group, stretch=1)  # Let this expand
 
@@ -386,14 +435,41 @@ class MainWindow(QMainWindow):
         self.metronome_toggled.emit(checked)
 
     def _on_bpm_changed(self, value: int):
+        self._falling_notes.set_bpm(value)
         self.metronome_bpm_changed.emit(value)
 
+    def _on_count_in_toggled(self, checked: bool):
+        self._count_in_spin.setEnabled(checked)
+        self.count_in_enabled_changed.emit(checked)
+
+    def _on_count_in_beats_changed(self, value: int):
+        self.count_in_beats_changed.emit(value)
+
+    def _on_snap_toggled(self, checked: bool):
+        self._falling_notes.set_snap_enabled(checked)
+        self.snap_enabled_changed.emit(checked)
+
+    def _on_grid_toggled(self, checked: bool):
+        self._falling_notes.set_grid_enabled(checked)
+        self.grid_enabled_changed.emit(checked)
+
+    def _on_snap_division_changed(self, _index: int):
+        division = self._snap_combo.currentData()
+        if division:
+            self._falling_notes.set_snap_division(int(division))
+            self.snap_division_changed.emit(int(division))
+
     def _on_record_toggled(self, checked: bool):
-        self._set_recording_state(checked)
         self.record_toggled.emit(checked)
 
     def _on_stop_recording(self):
-        self._record_btn.setChecked(False)
+        if self._record_btn.isChecked():
+            self._record_btn.blockSignals(True)
+            self._record_btn.setChecked(False)
+            self._record_btn.blockSignals(False)
+        self.set_count_in_state(False, 0)
+        self.set_recording_state(False)
+        self.record_toggled.emit(False)
 
     def _on_play_recording(self):
         if self._falling_notes.is_playing():
@@ -443,6 +519,33 @@ class MainWindow(QMainWindow):
             self._save_wav_btn.setEnabled(True)
             self._save_midi_btn.setEnabled(True)
             self._play_btn.setEnabled(True)
+
+    def set_recording_state(self, recording: bool):
+        self._count_in_active = False
+        self._record_btn.blockSignals(True)
+        self._record_btn.setChecked(recording)
+        self._record_btn.blockSignals(False)
+        self._set_recording_state(recording)
+
+    def set_count_in_state(self, active: bool, beats_left: int):
+        self._count_in_active = active
+        if active:
+            self._record_btn.blockSignals(True)
+            self._record_btn.setChecked(True)
+            self._record_btn.blockSignals(False)
+            self._record_btn.setText(f"Count-in {beats_left}")
+            self._stop_btn.setEnabled(True)
+            self._time_label.setText(f"Count-in {beats_left}")
+            self._timer.stop()
+            self._save_wav_btn.setEnabled(False)
+            self._save_midi_btn.setEnabled(False)
+            self._play_btn.setEnabled(False)
+        else:
+            if not self._recording:
+                self._record_btn.setText("Record")
+                self._stop_btn.setEnabled(False)
+                if self._record_time == 0:
+                    self._time_label.setText("00:00")
 
     def _on_timeline_seek(self, value: int):
         """Handle timeline slider drag."""

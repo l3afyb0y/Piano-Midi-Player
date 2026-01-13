@@ -73,10 +73,18 @@ class PianoPlayer(QObject):
         self._midi_recorder = MidiRecorder()
         self._wav_recorder = None
         self._wav_path = None
+        self._recording_offset = 0.0
 
         # Metronome
         self._metronome = Metronome()
         self._metronome.set_click_callback(self._engine.queue_audio)
+        self._metronome.beat.connect(self._on_metronome_beat)
+        self._metronome_enabled = False
+        self._count_in_enabled = False
+        self._count_in_beats = 4
+        self._count_in_remaining = 0
+        self._count_in_active = False
+        self._recording_started_playback = False
 
         # Create window
         self._window = MainWindow()
@@ -176,6 +184,8 @@ class PianoPlayer(QObject):
         self._window.midi_library_refresh.connect(self._refresh_midi_library)
         self._window.midi_files_dropped.connect(self._on_midi_files_dropped)
         self._window.play_recording.connect(self._on_play_recording)
+        self._window.count_in_enabled_changed.connect(self._on_count_in_enabled_changed)
+        self._window.count_in_beats_changed.connect(self._on_count_in_beats_changed)
 
         # Falling notes playback signals
         self._window.falling_notes.note_triggered.connect(self._on_playback_note_on)
@@ -246,26 +256,104 @@ class PianoPlayer(QObject):
 
     def _on_record_toggled(self, recording: bool):
         if recording:
-            self._midi_recorder.start()
-            # Create temp WAV file
-            fd, self._wav_path = tempfile.mkstemp(suffix=".wav")
-            os.close(fd)
-            self._wav_recorder = WavRecorder(self._wav_path)
-            self._wav_recorder.start()
-            self._engine.set_audio_callback(self._wav_recorder.write)
+            if self._count_in_active:
+                return
+            if self._count_in_enabled and self._count_in_beats > 0 and not self._window.falling_notes.is_playing():
+                self._start_count_in()
+                return
+            self._start_recording()
         else:
-            self._midi_recorder.stop()
-            if self._wav_recorder:
-                self._wav_recorder.stop()
-                self._engine.set_audio_callback(None)
+            self._cancel_count_in()
+            self._stop_recording()
+
+    def _start_recording(self):
+        self._recording_offset = self._window.falling_notes.get_current_time()
+        self._midi_recorder.start()
+        # Create temp WAV file
+        fd, self._wav_path = tempfile.mkstemp(suffix=".wav")
+        os.close(fd)
+        self._wav_recorder = WavRecorder(self._wav_path)
+        self._wav_recorder.start()
+        self._engine.set_audio_callback(self._wav_recorder.write)
+
+        self._recording_started_playback = False
+        if self._window.falling_notes.has_events() and not self._window.falling_notes.is_playing():
+            self._window.start_playback()
+            self._recording_started_playback = True
+
+        self._window.set_recording_state(True)
+
+    def _stop_recording(self):
+        self._midi_recorder.stop()
+        if self._wav_recorder:
+            self._wav_recorder.stop()
+            self._engine.set_audio_callback(None)
+            self._wav_recorder = None
+
+        if self._recording_started_playback:
+            self._window.stop_playback()
+        self._recording_started_playback = False
+
+        self._window.set_recording_state(False)
+
+        events = self._midi_recorder.get_events()
+        if events:
+            note_events = self._convert_to_note_events(events, self._recording_offset)
+            sustain_events = self._convert_to_sustain_events(events, self._recording_offset)
+            self._merge_recorded_events(note_events, sustain_events)
 
     def _on_save_wav(self, path: str):
         if self._wav_path:
             shutil.copy(self._wav_path, path)
             print(f"Saved WAV to: {path}")
 
+    def _on_count_in_enabled_changed(self, enabled: bool):
+        self._count_in_enabled = enabled
+
+    def _on_count_in_beats_changed(self, beats: int):
+        self._count_in_beats = max(1, beats)
+
+    def _start_count_in(self):
+        self._count_in_active = True
+        self._count_in_remaining = self._count_in_beats
+        self._window.set_count_in_state(True, self._count_in_remaining)
+        if not self._metronome.is_running():
+            self._metronome.start()
+
+    def _cancel_count_in(self):
+        if not self._count_in_active:
+            return
+        self._count_in_active = False
+        self._count_in_remaining = 0
+        self._window.set_count_in_state(False, 0)
+        if not self._metronome_enabled and self._metronome.is_running():
+            self._metronome.stop()
+
+    def _on_metronome_beat(self):
+        if not self._count_in_active:
+            return
+        if self._count_in_remaining <= 0:
+            return
+        self._window.set_count_in_state(True, self._count_in_remaining)
+        self._count_in_remaining -= 1
+        if self._count_in_remaining <= 0:
+            self._count_in_active = False
+            self._window.set_count_in_state(False, 0)
+            if not self._metronome_enabled and self._metronome.is_running():
+                self._metronome.stop()
+            self._start_recording()
+
     def _on_save_midi(self, path: str):
-        self._midi_recorder.save(path)
+        note_events = self._window.falling_notes.get_events()
+        sustain_events = self._window.falling_notes.get_sustain_events()
+        if not note_events and not sustain_events:
+            print("No MIDI events to save.")
+            return
+        try:
+            self._save_midi_file(path, note_events, sustain_events)
+        except Exception as e:
+            print(f"Failed to save MIDI file: {e}")
+            return
         print(f"Saved MIDI to: {path}")
 
     def _on_open_midi_file(self, path: str):
@@ -303,7 +391,7 @@ class PianoPlayer(QObject):
         self._window.load_recording(note_events, sustain_events)
         self._window.start_playback()
 
-    def _convert_to_note_events(self, events: list) -> list[NoteEvent]:
+    def _convert_to_note_events(self, events: list, offset: float = 0.0) -> list[NoteEvent]:
         """Convert MIDI recorder events to NoteEvent objects."""
         # Track note_on events to pair with note_off
         active_notes: dict[int, tuple[float, int]] = {}  # note -> (start_time, velocity)
@@ -315,26 +403,50 @@ class PianoPlayer(QObject):
             elif event['type'] == 'note_off':
                 if event['note'] in active_notes:
                     start_time, velocity = active_notes.pop(event['note'])
-                    duration = event['time'] - start_time
+                    duration = max(0.0, event['time'] - start_time)
                     note_events.append(NoteEvent(
                         note=event['note'],
-                        start_time=start_time,
+                        start_time=offset + start_time,
                         duration=duration,
                         velocity=velocity
                     ))
 
         return note_events
 
-    def _convert_to_sustain_events(self, events: list) -> list[SustainEvent]:
+    def _convert_to_sustain_events(self, events: list, offset: float = 0.0) -> list[SustainEvent]:
         """Convert MIDI recorder events to SustainEvent objects."""
         sustain_events = []
         for event in events:
             if event['type'] == 'sustain':
                 sustain_events.append(SustainEvent(
-                    time=event['time'],
+                    time=offset + event['time'],
                     on=event['value']
                 ))
         return sustain_events
+
+    def _merge_recorded_events(
+        self,
+        note_events: list[NoteEvent],
+        sustain_events: list[SustainEvent],
+    ):
+        if not note_events and not sustain_events:
+            return
+
+        existing_notes = self._window.falling_notes.get_events()
+        existing_sustain = self._window.falling_notes.get_sustain_events()
+        combined_notes = sorted(existing_notes + note_events, key=lambda e: e.start_time)
+        combined_sustain = sorted(existing_sustain + sustain_events, key=lambda e: e.time)
+
+        current_time = self._window.falling_notes.get_current_time()
+        was_playing = self._window.falling_notes.is_playing()
+        if was_playing:
+            self._window.falling_notes.stop()
+
+        self._window.falling_notes.load_events(combined_notes, combined_sustain)
+        self._window.falling_notes.seek(current_time)
+
+        if was_playing:
+            self._window.falling_notes.play()
 
     def _load_midi_dir(self) -> Path:
         saved = self._settings.value("midi_folder", "", type=str)
@@ -538,9 +650,10 @@ class PianoPlayer(QObject):
 
     def _on_metronome_toggled(self, on: bool):
         """Handle metronome on/off."""
+        self._metronome_enabled = on
         if on:
             self._metronome.start()
-        else:
+        elif not self._count_in_active:
             self._metronome.stop()
 
     def _on_metronome_bpm_changed(self, bpm: int):

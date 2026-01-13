@@ -1,6 +1,7 @@
 """Falling notes visualization for MIDI playback."""
 
 from dataclasses import dataclass
+import math
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtCore import QTimer, pyqtSignal, Qt
 from PyQt6.QtGui import QPainter, QColor, QBrush, QPen
@@ -48,8 +49,20 @@ class FallingNotesWidget(QWidget):
         self._playing = False
         self._visible_seconds = 4.0  # How many seconds visible in window
         self._total_duration = 0.0
-        self._selected_index: int | None = None
+        self._selected_ids: set[int] = set()
+        self._primary_id: int | None = None
         self._editing_enabled = True
+        self._drag_mode: str | None = None
+        self._drag_start_pos: tuple[float, float] | None = None
+        self._drag_anchor_id: int | None = None
+        self._drag_originals: list[tuple[NoteEvent, float, float, int]] = []
+        self._selection_rect: tuple[float, float, float, float] | None = None
+        self._selection_additive = False
+
+        self._snap_enabled = True
+        self._grid_enabled = True
+        self._snap_division = 4
+        self._bpm = 120
 
         # Animation timer
         self._timer = QTimer()
@@ -74,7 +87,8 @@ class FallingNotesWidget(QWidget):
         self._active_notes.clear()
         self._active_events.clear()
         self._triggered_sustain_indices.clear()
-        self._selected_index = None
+        self._selected_ids.clear()
+        self._primary_id = None
         self.update()
         self.events_changed.emit()
 
@@ -133,7 +147,8 @@ class FallingNotesWidget(QWidget):
         self._active_notes.clear()
         self._active_events.clear()
         self._triggered_sustain_indices.clear()
-        self._selected_index = None
+        self._selected_ids.clear()
+        self._primary_id = None
         self._total_duration = 0.0
         self.update()
         self.events_changed.emit()
@@ -141,6 +156,22 @@ class FallingNotesWidget(QWidget):
     def get_current_time(self) -> float:
         """Get current playback time."""
         return self._current_time
+
+    def set_bpm(self, bpm: int):
+        self._bpm = max(20, min(300, bpm))
+        self.update()
+
+    def set_snap_enabled(self, enabled: bool):
+        self._snap_enabled = enabled
+        self.update()
+
+    def set_grid_enabled(self, enabled: bool):
+        self._grid_enabled = enabled
+        self.update()
+
+    def set_snap_division(self, division: int):
+        self._snap_division = max(1, division)
+        self.update()
 
     def set_editing_enabled(self, enabled: bool):
         self._editing_enabled = enabled
@@ -236,8 +267,25 @@ class FallingNotesWidget(QWidget):
     def _now_y(self, height: int) -> float:
         return height - 20
 
+    def _time_to_y(self, time_value: float, height: int) -> float:
+        pixels_per_second = self._pixels_per_second(height)
+        now_y = self._now_y(height)
+        return now_y - (time_value - self._current_time) * pixels_per_second
+
     def _is_black_key(self, note: int) -> bool:
         return (note % 12) in self.BLACK_KEYS
+
+    def _snap_time(self, time_value: float) -> float:
+        if not self._snap_enabled:
+            return time_value
+        beat_duration = 60.0 / max(1, self._bpm)
+        step = beat_duration / max(1, self._snap_division)
+        if step <= 0:
+            return time_value
+        return round(time_value / step) * step
+
+    def _is_selected(self, note_event: NoteEvent) -> bool:
+        return id(note_event) in self._selected_ids
 
     def _note_at_x(self, x: float, width: int) -> int | None:
         """Return the MIDI note at the given x coordinate."""
@@ -303,11 +351,115 @@ class FallingNotesWidget(QWidget):
     def _delete_note_index(self, idx: int):
         if idx < 0 or idx >= len(self._notes):
             return
-        self._notes.pop(idx)
-        self._selected_index = None
+        removed = self._notes.pop(idx)
+        self._selected_ids.discard(id(removed))
+        if self._primary_id == id(removed):
+            self._primary_id = None
         self._reset_active_state(emit_audio=False)
         self._recalculate_total_duration()
         self.events_changed.emit()
+        self.update()
+
+    def _delete_selected(self):
+        if not self._selected_ids:
+            return
+        self._notes = [note for note in self._notes if id(note) not in self._selected_ids]
+        self._selected_ids.clear()
+        self._primary_id = None
+        self._reset_active_state(emit_audio=False)
+        self._recalculate_total_duration()
+        self.events_changed.emit()
+        self.update()
+
+    def _start_drag(self, mode: str, x: float, y: float, anchor_id: int | None = None):
+        self._drag_mode = mode
+        self._drag_start_pos = (x, y)
+        self._drag_anchor_id = anchor_id
+        self._drag_originals = [
+            (note, note.start_time, note.duration, note.note)
+            for note in self._notes
+            if id(note) in self._selected_ids
+        ]
+
+    def _apply_drag_move(self, x: float, y: float):
+        if not self._drag_start_pos or not self._drag_originals:
+            return
+        width = self.width()
+        height = self.height()
+        pixels_per_second = self._pixels_per_second(height)
+        if pixels_per_second <= 0:
+            return
+
+        start_x, start_y = self._drag_start_pos
+        delta_time = -(y - start_y) / pixels_per_second
+
+        start_note = self._note_at_x(start_x, width)
+        current_note = self._note_at_x(x, width)
+        delta_pitch = 0
+        if start_note is not None and current_note is not None:
+            delta_pitch = current_note - start_note
+
+        anchor_start = None
+        for note_event, start_time, _duration, _note in self._drag_originals:
+            if id(note_event) == self._drag_anchor_id:
+                anchor_start = start_time
+                break
+        if anchor_start is None and self._drag_originals:
+            anchor_start = self._drag_originals[0][1]
+
+        if anchor_start is not None and self._snap_enabled:
+            snapped_anchor = self._snap_time(anchor_start + delta_time)
+            delta_time = snapped_anchor - anchor_start
+
+        for note_event, start_time, _duration, note_value in self._drag_originals:
+            new_start = max(0.0, start_time + delta_time)
+            new_note = min(self.MAX_NOTE, max(self.MIN_NOTE, note_value + delta_pitch))
+            note_event.start_time = new_start
+            note_event.note = new_note
+
+        self.update()
+
+    def _apply_drag_resize(self, x: float, y: float):
+        if not self._drag_start_pos or not self._drag_originals:
+            return
+        height = self.height()
+        pixels_per_second = self._pixels_per_second(height)
+        if pixels_per_second <= 0:
+            return
+
+        _start_x, start_y = self._drag_start_pos
+        delta_time = -(y - start_y) / pixels_per_second
+
+        anchor_end = None
+        for note_event, start_time, duration, _note in self._drag_originals:
+            if id(note_event) == self._drag_anchor_id:
+                anchor_end = start_time + duration
+                break
+        if anchor_end is None and self._drag_originals:
+            start_time, duration = self._drag_originals[0][1:3]
+            anchor_end = start_time + duration
+
+        if anchor_end is not None and self._snap_enabled:
+            snapped_end = self._snap_time(anchor_end + delta_time)
+            delta_time = snapped_end - anchor_end
+
+        min_duration = 0.05
+        for note_event, _start_time, duration, _note in self._drag_originals:
+            note_event.duration = max(min_duration, duration + delta_time)
+
+        self.update()
+
+    def _finalize_drag(self):
+        if self._drag_mode in ("move", "resize"):
+            self._notes.sort(key=lambda e: e.start_time)
+            self._reset_active_state(emit_audio=False)
+            self._recalculate_total_duration()
+            self.events_changed.emit()
+        self._drag_mode = None
+        self._drag_start_pos = None
+        self._drag_anchor_id = None
+        self._drag_originals = []
+        self._selection_rect = None
         self.update()
 
     def mousePressEvent(self, event):
@@ -316,17 +468,95 @@ class FallingNotesWidget(QWidget):
 
         self.setFocus()
         pos = event.position()
+        x = pos.x()
+        y = pos.y()
+        shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+
         if event.button() == Qt.MouseButton.LeftButton:
-            self._selected_index = self._hit_test_note_index(pos.x(), pos.y())
+            idx = self._hit_test_note_index(x, y)
+            if idx is not None:
+                note_event = self._notes[idx]
+                note_id = id(note_event)
+                if shift:
+                    if note_id not in self._selected_ids:
+                        self._selected_ids.add(note_id)
+                else:
+                    if note_id not in self._selected_ids or len(self._selected_ids) > 1:
+                        self._selected_ids = {note_id}
+                self._primary_id = note_id
+
+                rect_x, rect_y, rect_w, rect_h = self._note_rect(note_event, self.width(), self.height())
+                handle_size = 6
+                if rect_x <= x <= rect_x + rect_w and rect_y <= y <= rect_y + min(handle_size, rect_h):
+                    self._start_drag("resize", x, y, anchor_id=note_id)
+                else:
+                    self._start_drag("move", x, y, anchor_id=note_id)
+                self.update()
+                return
+
+            if not shift:
+                self._selected_ids.clear()
+                self._primary_id = None
+            self._selection_additive = shift
+            self._selection_rect = (x, y, x, y)
+            self._start_drag("select", x, y, anchor_id=None)
             self.update()
             return
+
         if event.button() == Qt.MouseButton.RightButton:
-            idx = self._hit_test_note_index(pos.x(), pos.y())
+            idx = self._hit_test_note_index(x, y)
             if idx is not None:
                 self._delete_note_index(idx)
                 return
 
         return super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if not self._editing_enabled or self._playing:
+            return super().mouseMoveEvent(event)
+        if not self._drag_mode:
+            return super().mouseMoveEvent(event)
+
+        pos = event.position()
+        x = pos.x()
+        y = pos.y()
+
+        if self._drag_mode == "select":
+            if self._selection_rect:
+                x0, y0, _x1, _y1 = self._selection_rect
+                self._selection_rect = (x0, y0, x, y)
+                self.update()
+            return
+        if self._drag_mode == "move":
+            self._apply_drag_move(x, y)
+            return
+        if self._drag_mode == "resize":
+            self._apply_drag_resize(x, y)
+            return
+
+        return super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if not self._editing_enabled or self._playing:
+            return super().mouseReleaseEvent(event)
+
+        if self._drag_mode == "select" and self._selection_rect:
+            x0, y0, x1, y1 = self._selection_rect
+            left, right = sorted((x0, x1))
+            top, bottom = sorted((y0, y1))
+            selected = set() if not self._selection_additive else set(self._selected_ids)
+            for note_event in self._notes:
+                rect_x, rect_y, rect_w, rect_h = self._note_rect(note_event, self.width(), self.height())
+                if rect_x <= right and rect_x + rect_w >= left and rect_y <= bottom and rect_y + rect_h >= top:
+                    selected.add(id(note_event))
+            self._selected_ids = selected
+            if self._selected_ids:
+                self._primary_id = next(iter(self._selected_ids))
+            else:
+                self._primary_id = None
+
+        self._finalize_drag()
+        return super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event):
         if not self._editing_enabled or self._playing:
@@ -342,19 +572,23 @@ class FallingNotesWidget(QWidget):
 
         start_time = self._time_at_y(pos.y(), self.height())
         start_time = max(0.0, start_time)
+        start_time = self._snap_time(start_time)
+        default_duration = self.DEFAULT_NOTE_DURATION
+        if self._snap_enabled:
+            beat_duration = 60.0 / max(1, self._bpm)
+            step = beat_duration / max(1, self._snap_division)
+            if step > 0:
+                default_duration = max(default_duration, step)
         note_event = NoteEvent(
             note=note,
             start_time=start_time,
-            duration=self.DEFAULT_NOTE_DURATION,
+            duration=default_duration,
             velocity=self.DEFAULT_VELOCITY,
         )
         self._notes.append(note_event)
         self._notes.sort(key=lambda e: e.start_time)
-        self._selected_index = None
-        for idx, event in enumerate(self._notes):
-            if event is note_event:
-                self._selected_index = idx
-                break
+        self._selected_ids = {id(note_event)}
+        self._primary_id = id(note_event)
         self._reset_active_state(emit_audio=False)
         self._recalculate_total_duration()
         self.events_changed.emit()
@@ -366,8 +600,8 @@ class FallingNotesWidget(QWidget):
             return super().keyPressEvent(event)
 
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
-            if self._selected_index is not None:
-                self._delete_note_index(self._selected_index)
+            if self._selected_ids:
+                self._delete_selected()
                 return
 
         return super().keyPressEvent(event)
@@ -415,13 +649,32 @@ class FallingNotesWidget(QWidget):
                 painter.drawLine(int(x), 0, int(x), height)
                 white_idx += 1
 
+        pixels_per_second = self._pixels_per_second(height)
+        now_y = self._now_y(height)
+
+        if self._grid_enabled and pixels_per_second > 0:
+            beat_duration = 60.0 / max(1, self._bpm)
+            step_duration = beat_duration / max(1, self._snap_division)
+            time_top = self._current_time + ((now_y - 0) / pixels_per_second)
+            time_bottom = self._current_time + ((now_y - height) / pixels_per_second)
+            time_start = min(time_top, time_bottom)
+            time_end = max(time_top, time_bottom)
+
+            if step_duration > 0:
+                first_step = math.floor(time_start / step_duration) * step_duration
+                t = first_step
+                while t <= time_end:
+                    y = self._time_to_y(t, height)
+                    if 0 <= y <= height:
+                        is_beat = beat_duration > 0 and abs((t / beat_duration) - round(t / beat_duration)) < 1e-6
+                        color = QColor(50, 50, 60) if is_beat else QColor(35, 35, 45)
+                        painter.setPen(QPen(color, 1))
+                        painter.drawLine(0, int(y), width, int(y))
+                    t += step_duration
+
         # Draw "now" line at bottom
         painter.setPen(QPen(QColor(100, 100, 120), 2))
-        now_y = self._now_y(height)
         painter.drawLine(0, now_y, width, now_y)
-
-        # Draw notes
-        pixels_per_second = self._pixels_per_second(height)
 
         for idx, note_event in enumerate(self._notes):
             # Calculate y position (notes fall from top)
@@ -469,9 +722,10 @@ class FallingNotesWidget(QWidget):
                 int(note_width - 2), int(y_bottom - y_top),
                 3, 3
             )
-            if idx == self._selected_index:
+            if self._is_selected(note_event):
                 painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.setPen(QPen(QColor(240, 220, 120), 2))
+                highlight = QColor(240, 220, 120) if id(note_event) == self._primary_id else QColor(200, 190, 110)
+                painter.setPen(QPen(highlight, 2))
                 painter.drawRoundedRect(
                     int(x + 1), int(y_top),
                     int(note_width - 2), int(y_bottom - y_top),
@@ -483,5 +737,13 @@ class FallingNotesWidget(QWidget):
             time_text = f"{self._current_time:.1f}s / {self._total_duration:.1f}s"
             painter.setPen(QColor(150, 150, 150))
             painter.drawText(10, 20, time_text)
+
+        if self._selection_rect:
+            x0, y0, x1, y1 = self._selection_rect
+            left, right = sorted((x0, x1))
+            top, bottom = sorted((y0, y1))
+            painter.setBrush(QBrush(QColor(80, 140, 220, 50)))
+            painter.setPen(QPen(QColor(80, 140, 220), 1))
+            painter.drawRect(int(left), int(top), int(right - left), int(bottom - top))
 
         painter.end()
