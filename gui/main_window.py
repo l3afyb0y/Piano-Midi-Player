@@ -1,5 +1,6 @@
 """Main application window."""
 
+import os
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QSlider, QLabel, QPushButton, QComboBox,
@@ -20,6 +21,8 @@ class MainWindow(QMainWindow):
     record_toggled = pyqtSignal(bool)
     save_wav = pyqtSignal(str)
     save_midi = pyqtSignal(str)
+    open_midi_file = pyqtSignal(str)
+    save_midi_file = pyqtSignal(str)
     play_recording = pyqtSignal()  # Request to play back the recording
     metronome_toggled = pyqtSignal(bool)  # Metronome on/off
     metronome_bpm_changed = pyqtSignal(int)  # BPM changed
@@ -107,6 +110,7 @@ class MainWindow(QMainWindow):
 
         self._recording = False
         self._record_time = 0
+        self._midi_file_path: str | None = None
 
         self._setup_ui()
         self._setup_timer()
@@ -189,6 +193,26 @@ class MainWindow(QMainWindow):
 
         top_row.addWidget(synth_group)
 
+        # MIDI file group
+        midi_file_group = QGroupBox("MIDI File")
+        midi_file_layout = QVBoxLayout(midi_file_group)
+
+        self._open_midi_btn = QPushButton("Open MIDI...")
+        self._open_midi_btn.clicked.connect(self._on_open_midi)
+        midi_file_layout.addWidget(self._open_midi_btn)
+
+        self._save_midi_file_btn = QPushButton("Save MIDI...")
+        self._save_midi_file_btn.clicked.connect(self._on_save_midi_file)
+        self._save_midi_file_btn.setEnabled(False)
+        midi_file_layout.addWidget(self._save_midi_file_btn)
+
+        self._midi_file_label = QLabel("No MIDI loaded")
+        self._midi_file_label.setMinimumWidth(120)
+        self._midi_file_label.setWordWrap(True)
+        midi_file_layout.addWidget(self._midi_file_label)
+
+        top_row.addWidget(midi_file_group)
+
         # Recording group
         record_group = QGroupBox("Recording")
         record_main_layout = QVBoxLayout(record_group)
@@ -266,6 +290,7 @@ class MainWindow(QMainWindow):
         self._falling_notes.time_changed.connect(self._on_time_changed)
         self._falling_notes.note_triggered.connect(self._keyboard.note_on)
         self._falling_notes.note_released.connect(self._keyboard.note_off)
+        self._falling_notes.events_changed.connect(self._on_events_changed)
         self._slider_dragging = False
 
     def _setup_timer(self):
@@ -292,6 +317,24 @@ class MainWindow(QMainWindow):
         if path:
             self.soundfont_loaded.emit(path)
 
+    def _on_open_midi(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open MIDI", "", "MIDI Files (*.mid *.midi)"
+        )
+        if path:
+            self.open_midi_file.emit(path)
+
+    def _on_save_midi_file(self):
+        default_name = "edited.mid"
+        if self._midi_file_path:
+            base = os.path.splitext(os.path.basename(self._midi_file_path))[0]
+            default_name = f"{base}-edited.mid"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save MIDI", default_name, "MIDI Files (*.mid *.midi)"
+        )
+        if path:
+            self.save_midi_file.emit(path)
+
     def _on_metronome_toggled(self, checked: bool):
         self._metro_btn.setText("Metronome On" if checked else "Metronome")
         self.metronome_toggled.emit(checked)
@@ -308,10 +351,14 @@ class MainWindow(QMainWindow):
 
     def _on_play_recording(self):
         if self._falling_notes.is_playing():
-            self._falling_notes.stop()
-            self._play_btn.setText("Play")
-        else:
-            self.play_recording.emit()
+            self.stop_playback()
+            return
+
+        if self._falling_notes.has_events():
+            self.start_playback()
+            return
+
+        self.play_recording.emit()
 
     def _on_save_wav(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -381,6 +428,16 @@ class MainWindow(QMainWindow):
         secs = int(time_seconds) % 60
         self._timeline_label.setText(f"{mins}:{secs:02d}")
 
+    def _on_events_changed(self):
+        duration = self._falling_notes.get_duration()
+        self._duration_label.setText(self._format_time(duration))
+        has_events = duration > 0
+        self._play_btn.setEnabled(has_events)
+        self._save_midi_file_btn.setEnabled(has_events)
+        if not has_events:
+            self._timeline_slider.setValue(0)
+            self._timeline_label.setText("0:00")
+
     def _format_time(self, seconds: float) -> str:
         """Format seconds as M:SS."""
         mins = int(seconds) // 60
@@ -410,6 +467,14 @@ class MainWindow(QMainWindow):
     def set_notes_count(self, count: int):
         self._notes_status.setText(f"Notes: {count}")
 
+    def set_midi_file_info(self, path: str | None):
+        self._midi_file_path = path
+        if path:
+            name = os.path.basename(path)
+            self._midi_file_label.setText(f"Loaded: {name}")
+        else:
+            self._midi_file_label.setText("No MIDI loaded")
+
     def keyboard_note_on(self, note: int, velocity: int):
         """Update keyboard visualization on note press."""
         self._keyboard.note_on(note, velocity)
@@ -421,11 +486,9 @@ class MainWindow(QMainWindow):
     def load_recording(self, events: list[NoteEvent], sustain_events: list[SustainEvent] | None = None):
         """Load recorded notes into the falling notes display."""
         self._falling_notes.load_events(events, sustain_events)
-        # Update duration label
-        duration = self._falling_notes.get_duration()
-        self._duration_label.setText(self._format_time(duration))
         self._timeline_slider.setValue(0)
         self._timeline_label.setText("0:00")
+        self._on_events_changed()
 
     def start_playback(self):
         """Start falling notes playback."""

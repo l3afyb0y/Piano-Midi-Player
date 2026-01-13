@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from PyQt6.QtWidgets import QWidget
-from PyQt6.QtCore import QTimer, pyqtSignal
+from PyQt6.QtCore import QTimer, pyqtSignal, Qt
 from PyQt6.QtGui import QPainter, QColor, QBrush, QPen
 
 
@@ -31,11 +31,14 @@ class FallingNotesWidget(QWidget):
     sustain_triggered = pyqtSignal(bool)   # True = on, False = off
     playback_finished = pyqtSignal()
     time_changed = pyqtSignal(float)       # current time for slider sync
+    events_changed = pyqtSignal()
 
     # Piano range
     MIN_NOTE = 21  # A0
     MAX_NOTE = 108  # C8
     BLACK_KEYS = {1, 3, 6, 8, 10}
+    DEFAULT_NOTE_DURATION = 0.5
+    DEFAULT_VELOCITY = 100
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -45,6 +48,8 @@ class FallingNotesWidget(QWidget):
         self._playing = False
         self._visible_seconds = 4.0  # How many seconds visible in window
         self._total_duration = 0.0
+        self._selected_index: int | None = None
+        self._editing_enabled = True
 
         # Animation timer
         self._timer = QTimer()
@@ -58,21 +63,20 @@ class FallingNotesWidget(QWidget):
         self._triggered_sustain_indices: set[int] = set()
 
         self.setMinimumHeight(200)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
     def load_events(self, events: list[NoteEvent], sustain_events: list[SustainEvent] | None = None):
         """Load note and sustain events for visualization."""
         self._notes = sorted(events, key=lambda e: e.start_time)
         self._sustain_events = sorted(sustain_events or [], key=lambda e: e.time)
-        if self._notes:
-            last = max(e.start_time + e.duration for e in self._notes)
-            self._total_duration = last
-        else:
-            self._total_duration = 0.0
+        self._recalculate_total_duration()
         self._current_time = 0.0
         self._active_notes.clear()
         self._active_events.clear()
         self._triggered_sustain_indices.clear()
+        self._selected_index = None
         self.update()
+        self.events_changed.emit()
 
     def play(self):
         """Start playback."""
@@ -112,9 +116,34 @@ class FallingNotesWidget(QWidget):
         """Get total duration of the recording."""
         return self._total_duration
 
+    def has_events(self) -> bool:
+        return bool(self._notes)
+
+    def get_events(self) -> list[NoteEvent]:
+        return list(self._notes)
+
+    def get_sustain_events(self) -> list[SustainEvent]:
+        return list(self._sustain_events)
+
+    def clear_events(self):
+        """Clear all loaded events."""
+        self._notes = []
+        self._sustain_events = []
+        self._current_time = 0.0
+        self._active_notes.clear()
+        self._active_events.clear()
+        self._triggered_sustain_indices.clear()
+        self._selected_index = None
+        self._total_duration = 0.0
+        self.update()
+        self.events_changed.emit()
+
     def get_current_time(self) -> float:
         """Get current playback time."""
         return self._current_time
+
+    def set_editing_enabled(self, enabled: bool):
+        self._editing_enabled = enabled
 
     def _reset_active_state(self, emit_audio: bool):
         """Clear active state and optionally emit note-off/sustain-off signals."""
@@ -143,6 +172,15 @@ class FallingNotesWidget(QWidget):
 
         if emit_audio and sustain_on:
             self.sustain_triggered.emit(True)
+
+    def _recalculate_total_duration(self):
+        if self._notes:
+            self._total_duration = max(e.start_time + e.duration for e in self._notes)
+            if self._current_time > self._total_duration:
+                self._current_time = self._total_duration
+        else:
+            self._total_duration = 0.0
+            self._current_time = 0.0
 
     def _tick(self):
         """Animation tick - advance time and trigger notes."""
@@ -190,8 +228,40 @@ class FallingNotesWidget(QWidget):
             self.stop()
             self.playback_finished.emit()
 
+    def _pixels_per_second(self, height: int) -> float:
+        if self._visible_seconds <= 0:
+            return 1.0
+        return (height - 40) / self._visible_seconds
+
+    def _now_y(self, height: int) -> float:
+        return height - 20
+
     def _is_black_key(self, note: int) -> bool:
         return (note % 12) in self.BLACK_KEYS
+
+    def _note_at_x(self, x: float, width: int) -> int | None:
+        """Return the MIDI note at the given x coordinate."""
+        # Prefer black keys for correct overlap behavior.
+        for note in range(self.MIN_NOTE, self.MAX_NOTE + 1):
+            if not self._is_black_key(note):
+                continue
+            note_x, note_width = self._get_note_x(note, width)
+            if note_x <= x <= note_x + note_width:
+                return note
+
+        for note in range(self.MIN_NOTE, self.MAX_NOTE + 1):
+            if self._is_black_key(note):
+                continue
+            note_x, note_width = self._get_note_x(note, width)
+            if note_x <= x <= note_x + note_width:
+                return note
+
+        return None
+
+    def _time_at_y(self, y: float, height: int) -> float:
+        pixels_per_second = self._pixels_per_second(height)
+        now_y = self._now_y(height)
+        return self._current_time + ((now_y - y) / pixels_per_second)
 
     def _get_note_x(self, note: int, width: float) -> tuple[float, float]:
         """Get x position and width for a note."""
@@ -210,6 +280,97 @@ class FallingNotesWidget(QWidget):
             white_count = sum(1 for n in range(self.MIN_NOTE, note)
                               if not self._is_black_key(n))
             return white_count * white_width, white_width
+
+    def _note_rect(self, note_event: NoteEvent, width: int, height: int) -> tuple[float, float, float, float]:
+        pixels_per_second = self._pixels_per_second(height)
+        now_y = self._now_y(height)
+        time_until_hit = note_event.start_time - self._current_time
+        y_bottom = now_y - (time_until_hit * pixels_per_second)
+        y_top = y_bottom - (note_event.duration * pixels_per_second)
+        x, note_width = self._get_note_x(note_event.note, width)
+        return x, y_top, note_width, y_bottom - y_top
+
+    def _hit_test_note_index(self, x: float, y: float) -> int | None:
+        width = self.width()
+        height = self.height()
+        for idx in range(len(self._notes) - 1, -1, -1):
+            note_event = self._notes[idx]
+            rect_x, rect_y, rect_w, rect_h = self._note_rect(note_event, width, height)
+            if rect_x <= x <= rect_x + rect_w and rect_y <= y <= rect_y + rect_h:
+                return idx
+        return None
+
+    def _delete_note_index(self, idx: int):
+        if idx < 0 or idx >= len(self._notes):
+            return
+        self._notes.pop(idx)
+        self._selected_index = None
+        self._reset_active_state(emit_audio=False)
+        self._recalculate_total_duration()
+        self.events_changed.emit()
+        self.update()
+
+    def mousePressEvent(self, event):
+        if not self._editing_enabled or self._playing:
+            return super().mousePressEvent(event)
+
+        self.setFocus()
+        pos = event.position()
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._selected_index = self._hit_test_note_index(pos.x(), pos.y())
+            self.update()
+            return
+        if event.button() == Qt.MouseButton.RightButton:
+            idx = self._hit_test_note_index(pos.x(), pos.y())
+            if idx is not None:
+                self._delete_note_index(idx)
+                return
+
+        return super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if not self._editing_enabled or self._playing:
+            return super().mouseDoubleClickEvent(event)
+
+        if event.button() != Qt.MouseButton.LeftButton:
+            return super().mouseDoubleClickEvent(event)
+
+        pos = event.position()
+        note = self._note_at_x(pos.x(), self.width())
+        if note is None:
+            return super().mouseDoubleClickEvent(event)
+
+        start_time = self._time_at_y(pos.y(), self.height())
+        start_time = max(0.0, start_time)
+        note_event = NoteEvent(
+            note=note,
+            start_time=start_time,
+            duration=self.DEFAULT_NOTE_DURATION,
+            velocity=self.DEFAULT_VELOCITY,
+        )
+        self._notes.append(note_event)
+        self._notes.sort(key=lambda e: e.start_time)
+        self._selected_index = None
+        for idx, event in enumerate(self._notes):
+            if event is note_event:
+                self._selected_index = idx
+                break
+        self._reset_active_state(emit_audio=False)
+        self._recalculate_total_duration()
+        self.events_changed.emit()
+        self.update()
+        return super().mouseDoubleClickEvent(event)
+
+    def keyPressEvent(self, event):
+        if not self._editing_enabled or self._playing:
+            return super().keyPressEvent(event)
+
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            if self._selected_index is not None:
+                self._delete_note_index(self._selected_index)
+                return
+
+        return super().keyPressEvent(event)
 
     def paintEvent(self, event):
         """Draw the falling notes."""
@@ -236,11 +397,11 @@ class FallingNotesWidget(QWidget):
 
         # Draw "now" line at bottom
         painter.setPen(QPen(QColor(100, 100, 120), 2))
-        now_y = height - 20
+        now_y = self._now_y(height)
         painter.drawLine(0, now_y, width, now_y)
 
         # Draw notes
-        pixels_per_second = (height - 40) / self._visible_seconds
+        pixels_per_second = self._pixels_per_second(height)
 
         for idx, note_event in enumerate(self._notes):
             # Calculate y position (notes fall from top)
@@ -288,6 +449,14 @@ class FallingNotesWidget(QWidget):
                 int(note_width - 2), int(y_bottom - y_top),
                 3, 3
             )
+            if idx == self._selected_index:
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.setPen(QPen(QColor(240, 220, 120), 2))
+                painter.drawRoundedRect(
+                    int(x + 1), int(y_top),
+                    int(note_width - 2), int(y_bottom - y_top),
+                    3, 3
+                )
 
         # Draw current time
         if self._total_duration > 0:

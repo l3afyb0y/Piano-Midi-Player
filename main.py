@@ -6,6 +6,7 @@ import os
 import tempfile
 import shutil
 from pathlib import Path
+import mido
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QObject, pyqtSignal
 
@@ -57,6 +58,7 @@ class PianoPlayer(QObject):
         self._soundfont_path = None
         self._synth_name = "Simple Synth"
         self._cleanup_synths = []
+        self._loaded_midi_path: str | None = None
 
         # Create components - try SoundFont first, fall back to simple synth
         self._synth = self._create_default_synth()
@@ -162,6 +164,8 @@ class PianoPlayer(QObject):
         self._window.record_toggled.connect(self._on_record_toggled)
         self._window.save_wav.connect(self._on_save_wav)
         self._window.save_midi.connect(self._on_save_midi)
+        self._window.open_midi_file.connect(self._on_open_midi_file)
+        self._window.save_midi_file.connect(self._on_save_midi_file)
         self._window.play_recording.connect(self._on_play_recording)
 
         # Falling notes playback signals
@@ -255,9 +259,36 @@ class PianoPlayer(QObject):
         self._midi_recorder.save(path)
         print(f"Saved MIDI to: {path}")
 
+    def _on_open_midi_file(self, path: str):
+        try:
+            note_events, sustain_events = self._load_midi_file(path)
+        except Exception as e:
+            print(f"Failed to load MIDI file: {e}")
+            return
+
+        self._loaded_midi_path = path
+        self._window.set_midi_file_info(path)
+        self._window.load_recording(note_events, sustain_events)
+
+    def _on_save_midi_file(self, path: str):
+        note_events = self._window.falling_notes.get_events()
+        sustain_events = self._window.falling_notes.get_sustain_events()
+        if not note_events and not sustain_events:
+            print("No MIDI events to save.")
+            return
+        try:
+            self._save_midi_file(path, note_events, sustain_events)
+        except Exception as e:
+            print(f"Failed to save MIDI file: {e}")
+            return
+        print(f"Saved MIDI to: {path}")
+
     def _on_play_recording(self):
         """Convert recorded events to NoteEvents and start playback."""
         events = self._midi_recorder.get_events()
+        if not events:
+            print("No recorded MIDI to play.")
+            return
         note_events = self._convert_to_note_events(events)
         sustain_events = self._convert_to_sustain_events(events)
         self._window.load_recording(note_events, sustain_events)
@@ -295,6 +326,108 @@ class PianoPlayer(QObject):
                     on=event['value']
                 ))
         return sustain_events
+
+    @staticmethod
+    def _load_midi_file(path: str) -> tuple[list[NoteEvent], list[SustainEvent]]:
+        """Load a MIDI file and convert to NoteEvent/SustainEvent lists."""
+        midi_file = mido.MidiFile(path)
+        tempo = 500000  # Default 120 BPM
+        current_time = 0.0
+        active_notes: dict[tuple[int, int], list[tuple[float, int]]] = {}
+        note_events: list[NoteEvent] = []
+        sustain_events: list[SustainEvent] = []
+
+        for msg in mido.merge_tracks(midi_file.tracks):
+            current_time += mido.tick2second(msg.time, midi_file.ticks_per_beat, tempo)
+            if msg.type == "set_tempo":
+                tempo = msg.tempo
+                continue
+
+            if msg.type == "note_on" and msg.velocity > 0:
+                key = (getattr(msg, "channel", 0), msg.note)
+                active_notes.setdefault(key, []).append((current_time, msg.velocity))
+            elif msg.type in ("note_off", "note_on"):
+                if msg.type == "note_on" and msg.velocity > 0:
+                    continue
+                key = (getattr(msg, "channel", 0), msg.note)
+                if key in active_notes and active_notes[key]:
+                    start_time, velocity = active_notes[key].pop(0)
+                    duration = max(0.0, current_time - start_time)
+                    note_events.append(NoteEvent(
+                        note=msg.note,
+                        start_time=start_time,
+                        duration=duration,
+                        velocity=velocity,
+                    ))
+            elif msg.type == "control_change" and msg.control == 64:
+                sustain_events.append(SustainEvent(
+                    time=current_time,
+                    on=msg.value >= 64,
+                ))
+
+        return note_events, sustain_events
+
+    @staticmethod
+    def _save_midi_file(
+        path: str,
+        note_events: list[NoteEvent],
+        sustain_events: list[SustainEvent],
+        tempo: int = 500000,
+    ):
+        """Save NoteEvent/SustainEvent lists to a MIDI file."""
+        midi_file = mido.MidiFile()
+        track = mido.MidiTrack()
+        midi_file.tracks.append(track)
+
+        track.append(mido.MetaMessage("set_tempo", tempo=tempo, time=0))
+
+        events: list[tuple[float, int, mido.Message]] = []
+        for note_event in note_events:
+            start_time = max(0.0, note_event.start_time)
+            end_time = max(start_time, note_event.start_time + max(0.0, note_event.duration))
+            events.append((
+                start_time,
+                0,
+                mido.Message(
+                    "note_on",
+                    note=note_event.note,
+                    velocity=max(0, min(127, note_event.velocity)),
+                    time=0,
+                ),
+            ))
+            events.append((
+                end_time,
+                1,
+                mido.Message("note_off", note=note_event.note, velocity=0, time=0),
+            ))
+
+        for sustain_event in sustain_events:
+            events.append((
+                max(0.0, sustain_event.time),
+                2,
+                mido.Message(
+                    "control_change",
+                    control=64,
+                    value=127 if sustain_event.on else 0,
+                    time=0,
+                ),
+            ))
+
+        events.sort(key=lambda item: (item[0], item[1]))
+
+        last_time = 0.0
+        for event_time, _order, message in events:
+            delta_seconds = max(0.0, event_time - last_time)
+            delta_ticks = int(mido.second2tick(
+                delta_seconds,
+                midi_file.ticks_per_beat,
+                tempo,
+            ))
+            message.time = delta_ticks
+            track.append(message)
+            last_time = event_time
+
+        midi_file.save(path)
 
     def _on_playback_note_on(self, note: int, velocity: int):
         """Handle note triggered during playback."""
