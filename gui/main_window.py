@@ -4,7 +4,7 @@ import os
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QSlider, QLabel, QPushButton, QComboBox,
-    QFileDialog, QSpinBox
+    QFileDialog, QSpinBox, QListWidget, QListWidgetItem, QAbstractItemView
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from gui.keyboard_widget import KeyboardWidget
@@ -23,6 +23,9 @@ class MainWindow(QMainWindow):
     save_midi = pyqtSignal(str)
     open_midi_file = pyqtSignal(str)
     save_midi_file = pyqtSignal(str)
+    midi_folder_changed = pyqtSignal(str)
+    midi_library_refresh = pyqtSignal()
+    midi_files_dropped = pyqtSignal(list)
     play_recording = pyqtSignal()  # Request to play back the recording
     metronome_toggled = pyqtSignal(bool)  # Metronome on/off
     metronome_bpm_changed = pyqtSignal(int)  # BPM changed
@@ -111,10 +114,12 @@ class MainWindow(QMainWindow):
         self._recording = False
         self._record_time = 0
         self._midi_file_path: str | None = None
+        self._midi_dir: str | None = None
 
         self._setup_ui()
         self._setup_timer()
         self._apply_dark_mode()
+        self.setAcceptDrops(True)
 
     def _setup_ui(self):
         """Create UI elements."""
@@ -212,6 +217,32 @@ class MainWindow(QMainWindow):
         midi_file_layout.addWidget(self._midi_file_label)
 
         top_row.addWidget(midi_file_group)
+
+        # MIDI library group
+        library_group = QGroupBox("MIDI Library")
+        library_layout = QVBoxLayout(library_group)
+
+        library_controls = QHBoxLayout()
+        self._midi_folder_btn = QPushButton("Set MIDI Folder...")
+        self._midi_folder_btn.clicked.connect(self._on_set_midi_folder)
+        library_controls.addWidget(self._midi_folder_btn)
+
+        self._midi_refresh_btn = QPushButton("Refresh")
+        self._midi_refresh_btn.clicked.connect(self._on_refresh_library)
+        library_controls.addWidget(self._midi_refresh_btn)
+        library_layout.addLayout(library_controls)
+
+        self._midi_folder_label = QLabel("Folder: Not set")
+        self._midi_folder_label.setWordWrap(True)
+        library_layout.addWidget(self._midi_folder_label)
+
+        self._midi_list = QListWidget()
+        self._midi_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._midi_list.itemDoubleClicked.connect(self._on_midi_item_activated)
+        self._midi_list.setMinimumHeight(100)
+        library_layout.addWidget(self._midi_list)
+
+        layout.addWidget(library_group)
 
         # Recording group
         record_group = QGroupBox("Recording")
@@ -318,9 +349,24 @@ class MainWindow(QMainWindow):
             self.soundfont_loaded.emit(path)
 
     def _on_open_midi(self):
+        start_dir = self._midi_dir or ""
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open MIDI", "", "MIDI Files (*.mid *.midi)"
+            self, "Open MIDI", start_dir, "MIDI Files (*.mid *.midi)"
         )
+        if path:
+            self.open_midi_file.emit(path)
+
+    def _on_set_midi_folder(self):
+        start_dir = self._midi_dir or ""
+        path = QFileDialog.getExistingDirectory(self, "Select MIDI Folder", start_dir)
+        if path:
+            self.midi_folder_changed.emit(path)
+
+    def _on_refresh_library(self):
+        self.midi_library_refresh.emit()
+
+    def _on_midi_item_activated(self, item: QListWidgetItem):
+        path = item.data(Qt.ItemDataRole.UserRole)
         if path:
             self.open_midi_file.emit(path)
 
@@ -438,6 +484,19 @@ class MainWindow(QMainWindow):
             self._timeline_slider.setValue(0)
             self._timeline_label.setText("0:00")
 
+    @staticmethod
+    def _is_midi_file(path: str) -> bool:
+        return path.lower().endswith((".mid", ".midi"))
+
+    def _midi_paths_from_urls(self, urls) -> list[str]:
+        paths: list[str] = []
+        for url in urls:
+            if url.isLocalFile():
+                path = url.toLocalFile()
+                if path and self._is_midi_file(path):
+                    paths.append(path)
+        return paths
+
     def _format_time(self, seconds: float) -> str:
         """Format seconds as M:SS."""
         mins = int(seconds) // 60
@@ -474,6 +533,49 @@ class MainWindow(QMainWindow):
             self._midi_file_label.setText(f"Loaded: {name}")
         else:
             self._midi_file_label.setText("No MIDI loaded")
+
+    def set_midi_folder(self, path: str | None):
+        self._midi_dir = path
+        if path:
+            self._midi_folder_label.setText(f"Folder: {path}")
+        else:
+            self._midi_folder_label.setText("Folder: Not set")
+
+    def set_midi_library(self, paths: list[str]):
+        self._midi_list.clear()
+        for path in paths:
+            name = os.path.basename(path)
+            item = QListWidgetItem(name)
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            item.setToolTip(path)
+            self._midi_list.addItem(item)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            paths = self._midi_paths_from_urls(event.mimeData().urls())
+            if paths:
+                event.acceptProposedAction()
+                return
+        event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            paths = self._midi_paths_from_urls(event.mimeData().urls())
+            if paths:
+                event.acceptProposedAction()
+                return
+        event.ignore()
+
+    def dropEvent(self, event):
+        if not event.mimeData().hasUrls():
+            event.ignore()
+            return
+        paths = self._midi_paths_from_urls(event.mimeData().urls())
+        if not paths:
+            event.ignore()
+            return
+        self.midi_files_dropped.emit(paths)
+        event.acceptProposedAction()
 
     def keyboard_note_on(self, note: int, velocity: int):
         """Update keyboard visualization on note press."""

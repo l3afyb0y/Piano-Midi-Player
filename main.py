@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path
 import mido
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, pyqtSignal, QSettings
 
 from gui.main_window import MainWindow
 from gui.falling_notes_widget import NoteEvent, SustainEvent
@@ -31,6 +31,7 @@ DEFAULT_SOUNDFONT_LOCATIONS = [
     "/usr/share/sounds/sf2/TimGM6mb.sf2",
     "/Library/Audio/Sounds/Banks/FluidR3_GM.sf2",
 ]
+DEFAULT_MIDI_DIR = Path.home() / "midi"
 
 
 def find_default_soundfont() -> str | None:
@@ -59,6 +60,9 @@ class PianoPlayer(QObject):
         self._synth_name = "Simple Synth"
         self._cleanup_synths = []
         self._loaded_midi_path: str | None = None
+        self._settings = QSettings()
+        self._midi_dir = self._load_midi_dir()
+        self._ensure_midi_dir()
 
         # Create components - try SoundFont first, fall back to simple synth
         self._synth = self._create_default_synth()
@@ -82,6 +86,8 @@ class PianoPlayer(QObject):
 
         # Sync UI with active synth
         self._window.set_synth_selection(self._synth_name)
+        self._window.set_midi_folder(str(self._midi_dir))
+        self._refresh_midi_library()
 
         # Start MIDI input
         self._midi_thread.add_callback(self._on_midi_message)
@@ -166,6 +172,9 @@ class PianoPlayer(QObject):
         self._window.save_midi.connect(self._on_save_midi)
         self._window.open_midi_file.connect(self._on_open_midi_file)
         self._window.save_midi_file.connect(self._on_save_midi_file)
+        self._window.midi_folder_changed.connect(self._on_midi_folder_changed)
+        self._window.midi_library_refresh.connect(self._refresh_midi_library)
+        self._window.midi_files_dropped.connect(self._on_midi_files_dropped)
         self._window.play_recording.connect(self._on_play_recording)
 
         # Falling notes playback signals
@@ -327,6 +336,82 @@ class PianoPlayer(QObject):
                 ))
         return sustain_events
 
+    def _load_midi_dir(self) -> Path:
+        saved = self._settings.value("midi_folder", "", type=str)
+        if saved:
+            return Path(saved).expanduser()
+        return DEFAULT_MIDI_DIR
+
+    def _ensure_midi_dir(self):
+        try:
+            self._midi_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            print(f"Failed to create MIDI folder '{self._midi_dir}': {e}")
+
+    def _on_midi_folder_changed(self, path: str):
+        if not path:
+            return
+        self._midi_dir = Path(path).expanduser()
+        self._ensure_midi_dir()
+        self._settings.setValue("midi_folder", str(self._midi_dir))
+        self._window.set_midi_folder(str(self._midi_dir))
+        self._refresh_midi_library()
+
+    def _refresh_midi_library(self):
+        if not self._midi_dir or not self._midi_dir.exists():
+            self._window.set_midi_library([])
+            return
+        midi_files = [
+            str(path)
+            for path in sorted(self._midi_dir.iterdir())
+            if path.is_file() and path.suffix.lower() in (".mid", ".midi")
+        ]
+        self._window.set_midi_library(midi_files)
+
+    @staticmethod
+    def _unique_destination(directory: Path, filename: str) -> Path:
+        candidate = directory / filename
+        if not candidate.exists():
+            return candidate
+        stem = candidate.stem
+        suffix = candidate.suffix
+        for idx in range(1, 1000):
+            alt = directory / f"{stem}-{idx}{suffix}"
+            if not alt.exists():
+                return alt
+        raise FileExistsError(f"Could not find unique filename for {filename}")
+
+    def _on_midi_files_dropped(self, paths: list[str]):
+        if not paths:
+            return
+        if not self._midi_dir:
+            self._midi_dir = DEFAULT_MIDI_DIR
+            self._ensure_midi_dir()
+            self._window.set_midi_folder(str(self._midi_dir))
+
+        moved_any = False
+        dest_dir = self._midi_dir
+        for path in paths:
+            src = Path(path)
+            if not src.exists() or src.suffix.lower() not in (".mid", ".midi"):
+                continue
+            try:
+                if src.resolve().parent == dest_dir.resolve():
+                    moved_any = True
+                    continue
+            except Exception:
+                pass
+
+            dest = self._unique_destination(dest_dir, src.name)
+            try:
+                shutil.move(str(src), str(dest))
+                moved_any = True
+            except Exception as e:
+                print(f"Failed to move '{src}' to '{dest}': {e}")
+
+        if moved_any:
+            self._refresh_midi_library()
+
     @staticmethod
     def _load_midi_file(path: str) -> tuple[list[NoteEvent], list[SustainEvent]]:
         """Load a MIDI file and convert to NoteEvent/SustainEvent lists."""
@@ -480,6 +565,8 @@ class PianoPlayer(QObject):
 
 def main():
     app = QApplication(sys.argv)
+    app.setOrganizationName("PianoPlayer")
+    app.setApplicationName("Piano Player")
     player = PianoPlayer()
     player.start()
 

@@ -372,6 +372,26 @@ class FallingNotesWidget(QWidget):
 
         return super().keyPressEvent(event)
 
+    def wheelEvent(self, event):
+        if not self._notes:
+            return super().wheelEvent(event)
+
+        delta_y = event.pixelDelta().y()
+        if delta_y == 0:
+            delta_y = event.angleDelta().y()
+            if delta_y == 0:
+                return super().wheelEvent(event)
+            step_seconds = self._visible_seconds / 10.0
+            delta_seconds = (delta_y / 120.0) * step_seconds
+        else:
+            pixels_per_second = self._pixels_per_second(self.height())
+            if pixels_per_second <= 0:
+                return super().wheelEvent(event)
+            delta_seconds = delta_y / pixels_per_second
+
+        self.seek(self._current_time - delta_seconds)
+        event.accept()
+
     def paintEvent(self, event):
         """Draw the falling notes."""
         painter = QPainter(self)

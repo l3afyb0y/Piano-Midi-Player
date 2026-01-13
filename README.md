@@ -5,6 +5,7 @@ Desktop piano/MIDI player with real-time input, synth playback, recording, and v
 ## Features
 - Load MIDI files and visualize them as falling notes
 - Add notes (double-click) and remove notes (right-click or Delete) for quick transcription edits
+- MIDI library list from a configurable folder (defaults to `~/midi`) with drag-and-drop import
 - Real-time MIDI input with keyboard and piano roll visualization
 - Two synth engines: Simple Synth (built-in) and SoundFont (FluidSynth)
 - Metronome with adjustable BPM
@@ -59,6 +60,14 @@ python main.py
 - Double-click in the piano roll to add a note.
 - Right-click a note (or select it and press Delete) to remove it.
 - Use **Save MIDI...** to export the edited result.
+
+## MIDI library
+- On first launch the app creates `~/midi` if it doesn't exist.
+- Use **Set MIDI Folder...** to point the library to a different directory.
+- Drag `.mid`/`.midi` files onto the app to move them into the library folder.
+
+## Build app
+See `docs/BUILD.md` for PyInstaller build steps.
 
 ## Project layout
 - `main.py`: app entry point
