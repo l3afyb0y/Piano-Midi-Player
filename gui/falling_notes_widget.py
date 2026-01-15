@@ -47,7 +47,7 @@ class FallingNotesWidget(QWidget):
         self._sustain_events: list[SustainEvent] = []
         self._current_time = 0.0
         self._playing = False
-        self._visible_seconds = 4.0  # How many seconds visible in window
+        self._visible_seconds = 6.0  # How many seconds visible in window
         self._total_duration = 0.0
         self._selected_ids: set[int] = set()
         self._primary_id: int | None = None
@@ -56,7 +56,7 @@ class FallingNotesWidget(QWidget):
         self._drag_start_pos: tuple[float, float] | None = None
         self._drag_anchor_id: int | None = None
         self._drag_originals: list[tuple[NoteEvent, float, float, int]] = []
-        self._selection_rect: tuple[float, float, float, float] | None = None
+        self._selection_bounds: tuple[float, float, float, float] | None = None  # x0, x1, t0, t1
         self._selection_additive = False
 
         self._snap_enabled = True
@@ -75,7 +75,7 @@ class FallingNotesWidget(QWidget):
         # Track which sustain events have been triggered
         self._triggered_sustain_indices: set[int] = set()
 
-        self.setMinimumHeight(200)
+        self.setMinimumHeight(280)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
     def load_events(self, events: list[NoteEvent], sustain_events: list[SustainEvent] | None = None):
@@ -89,6 +89,7 @@ class FallingNotesWidget(QWidget):
         self._triggered_sustain_indices.clear()
         self._selected_ids.clear()
         self._primary_id = None
+        self._selection_bounds = None
         self.update()
         self.events_changed.emit()
 
@@ -149,6 +150,7 @@ class FallingNotesWidget(QWidget):
         self._triggered_sustain_indices.clear()
         self._selected_ids.clear()
         self._primary_id = None
+        self._selection_bounds = None
         self._total_duration = 0.0
         self.update()
         self.events_changed.emit()
@@ -459,7 +461,7 @@ class FallingNotesWidget(QWidget):
         self._drag_start_pos = None
         self._drag_anchor_id = None
         self._drag_originals = []
-        self._selection_rect = None
+        self._selection_bounds = None
         self.update()
 
     def mousePressEvent(self, event):
@@ -498,7 +500,8 @@ class FallingNotesWidget(QWidget):
                 self._selected_ids.clear()
                 self._primary_id = None
             self._selection_additive = shift
-            self._selection_rect = (x, y, x, y)
+            start_time = self._time_at_y(y, self.height())
+            self._selection_bounds = (x, x, start_time, start_time)
             self._start_drag("select", x, y, anchor_id=None)
             self.update()
             return
@@ -522,9 +525,10 @@ class FallingNotesWidget(QWidget):
         y = pos.y()
 
         if self._drag_mode == "select":
-            if self._selection_rect:
-                x0, y0, _x1, _y1 = self._selection_rect
-                self._selection_rect = (x0, y0, x, y)
+            if self._selection_bounds:
+                x0, _x1, t0, _t1 = self._selection_bounds
+                t1 = self._time_at_y(y, self.height())
+                self._selection_bounds = (x0, x, t0, t1)
                 self.update()
             return
         if self._drag_mode == "move":
@@ -540,14 +544,17 @@ class FallingNotesWidget(QWidget):
         if not self._editing_enabled or self._playing:
             return super().mouseReleaseEvent(event)
 
-        if self._drag_mode == "select" and self._selection_rect:
-            x0, y0, x1, y1 = self._selection_rect
+        if self._drag_mode == "select" and self._selection_bounds:
+            x0, x1, t0, t1 = self._selection_bounds
             left, right = sorted((x0, x1))
-            top, bottom = sorted((y0, y1))
+            time_start, time_end = sorted((t0, t1))
             selected = set() if not self._selection_additive else set(self._selected_ids)
             for note_event in self._notes:
-                rect_x, rect_y, rect_w, rect_h = self._note_rect(note_event, self.width(), self.height())
-                if rect_x <= right and rect_x + rect_w >= left and rect_y <= bottom and rect_y + rect_h >= top:
+                note_x, note_w = self._get_note_x(note_event.note, self.width())
+                note_start = note_event.start_time
+                note_end = note_event.start_time + note_event.duration
+                if (note_x <= right and note_x + note_w >= left
+                        and note_start <= time_end and note_end >= time_start):
                     selected.add(id(note_event))
             self._selected_ids = selected
             if self._selected_ids:
@@ -623,7 +630,7 @@ class FallingNotesWidget(QWidget):
                 return super().wheelEvent(event)
             delta_seconds = delta_y / pixels_per_second
 
-        self.seek(self._current_time - delta_seconds)
+        self.seek(self._current_time + delta_seconds)
         event.accept()
 
     def paintEvent(self, event):
@@ -738,9 +745,11 @@ class FallingNotesWidget(QWidget):
             painter.setPen(QColor(150, 150, 150))
             painter.drawText(10, 20, time_text)
 
-        if self._selection_rect:
-            x0, y0, x1, y1 = self._selection_rect
+        if self._selection_bounds:
+            x0, x1, t0, t1 = self._selection_bounds
             left, right = sorted((x0, x1))
+            y0 = self._time_to_y(t0, height)
+            y1 = self._time_to_y(t1, height)
             top, bottom = sorted((y0, y1))
             painter.setBrush(QBrush(QColor(80, 140, 220, 50)))
             painter.setPen(QPen(QColor(80, 140, 220), 1))

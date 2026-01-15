@@ -56,6 +56,13 @@ If none are found, the app falls back to the built-in Simple Synth.
 python main.py
 ```
 
+## Self-test
+Run quick dependency/device checks from the repo root:
+```bash
+python scripts/self_test.py --list-midi --load-soundfont
+```
+Optional flags: `--beep`, `--list-devices`, `--timeout 10`.
+
 ## MIDI editing
 - Open a `.mid` or `.midi` file with the **Open MIDI...** button.
 - Double-click in the piano roll to add a note.

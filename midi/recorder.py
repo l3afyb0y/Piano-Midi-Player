@@ -12,16 +12,47 @@ class MidiRecorder:
         self._events: List[Dict[str, Any]] = []
         self._start_time: Optional[float] = None
         self._recording = False
+        self._active_notes: Dict[int, int] = {}  # note -> outstanding note_on count
+        self._sustain_on = False
 
     def start(self):
         """Start recording."""
         self._events = []
         self._start_time = time.time()
         self._recording = True
+        self._active_notes = {}
+        self._sustain_on = False
 
     def stop(self):
         """Stop recording."""
+        if not self._recording or self._start_time is None:
+            self._recording = False
+            return
+
+        stop_time = time.time() - self._start_time
+
+        # Close any still-held notes so they keep their recorded duration.
+        for note, count in sorted(self._active_notes.items()):
+            for _ in range(count):
+                self._events.append({
+                    'type': 'note_off',
+                    'note': note,
+                    'velocity': 0,
+                    'time': stop_time,
+                })
+        self._active_notes = {}
+
+        # End sustain pedal if it was left on.
+        if self._sustain_on:
+            self._events.append({
+                'type': 'sustain',
+                'value': False,
+                'time': stop_time,
+            })
+            self._sustain_on = False
+
         self._recording = False
+        self._start_time = None
 
     def note_on(self, note: int, velocity: int):
         """Record note on event."""
@@ -33,6 +64,7 @@ class MidiRecorder:
             'velocity': velocity,
             'time': time.time() - self._start_time,
         })
+        self._active_notes[note] = self._active_notes.get(note, 0) + 1
 
     def note_off(self, note: int):
         """Record note off event."""
@@ -44,6 +76,10 @@ class MidiRecorder:
             'velocity': 0,
             'time': time.time() - self._start_time,
         })
+        if note in self._active_notes:
+            self._active_notes[note] -= 1
+            if self._active_notes[note] <= 0:
+                del self._active_notes[note]
 
     def sustain(self, on: bool):
         """Record sustain pedal event."""
@@ -54,6 +90,7 @@ class MidiRecorder:
             'value': on,
             'time': time.time() - self._start_time,
         })
+        self._sustain_on = on
 
     def get_events(self) -> List[Dict[str, Any]]:
         """Return recorded events."""
