@@ -32,6 +32,15 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+Linux one-command setup (creates `.venv`, installs deps, installs desktop entry):
+```bash
+bash scripts/install.sh
+```
+System-wide desktop entry (requires sudo):
+```bash
+bash scripts/install.sh --system
+```
+
 ### System dependencies (optional but recommended)
 Linux (Debian/Ubuntu):
 ```bash
@@ -87,10 +96,18 @@ Optional flags: `--beep`, `--list-devices`, `--timeout 10`.
 See `docs/BUILD.md` for PyInstaller build steps.
 
 ## Desktop launcher (Linux)
+`pip install -r requirements.txt` only installs Python deps; it does not install a desktop entry.
 Run the installer to create a launcher that rebuilds the app when sources change:
 ```bash
 bash scripts/install_desktop.sh
 ```
+This installs `piano-player.desktop` to `~/.local/share/applications` so rofi and other launchers can see it.
+It also installs the app icon to the hicolor theme for launchers that show icons.
+System-wide install (requires sudo):
+```bash
+bash scripts/install_desktop.sh --system
+```
+System-wide installs use `/usr/local/bin` and `/usr/local/share/applications`.
 
 ## Docs
 See `docs/README.md` for build and design references.

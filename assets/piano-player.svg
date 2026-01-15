@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Piano Player">
+  <rect x="8" y="8" width="240" height="240" rx="36" fill="#1b1e27"/>
+  <rect x="20" y="20" width="216" height="216" rx="30" fill="#232836"/>
+  <rect x="28" y="72" width="200" height="120" rx="12" fill="#f7f6f1" stroke="#d7d6cf" stroke-width="4"/>
+  <line x1="56.6" y1="72" x2="56.6" y2="192" stroke="#d2d0c8" stroke-width="2"/>
+  <line x1="85.1" y1="72" x2="85.1" y2="192" stroke="#d2d0c8" stroke-width="2"/>
+  <line x1="113.7" y1="72" x2="113.7" y2="192" stroke="#d2d0c8" stroke-width="2"/>
+  <line x1="142.3" y1="72" x2="142.3" y2="192" stroke="#d2d0c8" stroke-width="2"/>
+  <line x1="170.9" y1="72" x2="170.9" y2="192" stroke="#d2d0c8" stroke-width="2"/>
+  <line x1="199.4" y1="72" x2="199.4" y2="192" stroke="#d2d0c8" stroke-width="2"/>
+  <rect x="47.6" y="72" width="18" height="70" rx="2" fill="#1d1f24" stroke="#0f1014" stroke-width="2"/>
+  <rect x="76.1" y="72" width="18" height="70" rx="2" fill="#1d1f24" stroke="#0f1014" stroke-width="2"/>
+  <rect x="133.3" y="72" width="18" height="70" rx="2" fill="#1d1f24" stroke="#0f1014" stroke-width="2"/>
+  <rect x="161.9" y="72" width="18" height="70" rx="2" fill="#1d1f24" stroke="#0f1014" stroke-width="2"/>
+  <rect x="190.4" y="72" width="18" height="70" rx="2" fill="#1d1f24" stroke="#0f1014" stroke-width="2"/>
+</svg>
