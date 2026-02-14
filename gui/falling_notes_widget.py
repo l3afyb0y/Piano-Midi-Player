@@ -75,7 +75,7 @@ class FallingNotesWidget(QWidget):
         # Track which sustain events have been triggered
         self._triggered_sustain_indices: set[int] = set()
 
-        self.setMinimumHeight(280)
+        self.setMinimumHeight(140)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
     def load_events(self, events: list[NoteEvent], sustain_events: list[SustainEvent] | None = None):

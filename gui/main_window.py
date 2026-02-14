@@ -5,11 +5,12 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QSlider, QLabel, QPushButton, QComboBox,
     QFileDialog, QSpinBox, QListWidget, QListWidgetItem, QAbstractItemView,
-    QCheckBox
+    QCheckBox, QSplitter, QAbstractSpinBox, QSizePolicy
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from gui.keyboard_widget import KeyboardWidget
 from gui.falling_notes_widget import FallingNotesWidget, NoteEvent, SustainEvent
+from gui.theme import APP_STYLE
 
 
 class MainWindow(QMainWindow):
@@ -18,6 +19,7 @@ class MainWindow(QMainWindow):
     # Signals for thread-safe communication
     volume_changed = pyqtSignal(float)
     synth_changed = pyqtSignal(str)
+    instrument_changed = pyqtSignal(str)
     soundfont_loaded = pyqtSignal(str)
     record_toggled = pyqtSignal(bool)
     save_wav = pyqtSignal(str)
@@ -35,87 +37,13 @@ class MainWindow(QMainWindow):
     snap_enabled_changed = pyqtSignal(bool)
     grid_enabled_changed = pyqtSignal(bool)
     snap_division_changed = pyqtSignal(int)
-
-    # Dark mode stylesheet
-    DARK_STYLE = """
-        QMainWindow, QWidget {
-            background-color: #1e1e1e;
-            color: #e0e0e0;
-        }
-        QGroupBox {
-            border: 1px solid #3a3a3a;
-            border-radius: 6px;
-            margin-top: 12px;
-            padding-top: 8px;
-            font-weight: bold;
-        }
-        QGroupBox::title {
-            subcontrol-origin: margin;
-            left: 10px;
-            padding: 0 5px;
-            color: #a0a0a0;
-        }
-        QPushButton {
-            background-color: #2d2d2d;
-            border: 1px solid #3a3a3a;
-            border-radius: 4px;
-            padding: 6px 12px;
-            color: #e0e0e0;
-        }
-        QPushButton:hover {
-            background-color: #3a3a3a;
-        }
-        QPushButton:pressed {
-            background-color: #4a4a4a;
-        }
-        QPushButton:checked {
-            background-color: #c0392b;
-            border-color: #e74c3c;
-        }
-        QPushButton:disabled {
-            background-color: #1a1a1a;
-            color: #606060;
-        }
-        QSlider::groove:horizontal {
-            border: 1px solid #3a3a3a;
-            height: 6px;
-            background: #2d2d2d;
-            border-radius: 3px;
-        }
-        QSlider::handle:horizontal {
-            background: #5dade2;
-            border: 1px solid #3498db;
-            width: 14px;
-            margin: -5px 0;
-            border-radius: 7px;
-        }
-        QSlider::sub-page:horizontal {
-            background: #3498db;
-            border-radius: 3px;
-        }
-        QComboBox {
-            background-color: #2d2d2d;
-            border: 1px solid #3a3a3a;
-            border-radius: 4px;
-            padding: 4px 8px;
-            color: #e0e0e0;
-        }
-        QComboBox::drop-down {
-            border: none;
-        }
-        QComboBox QAbstractItemView {
-            background-color: #2d2d2d;
-            selection-background-color: #3498db;
-        }
-        QLabel {
-            color: #e0e0e0;
-        }
-    """
+    midi_input_changed = pyqtSignal(str)
+    audio_output_changed = pyqtSignal(int)
 
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Piano Player")
-        self.setMinimumSize(500, 300)
+        self.setMinimumSize(900, 680)
 
         self._recording = False
         self._count_in_active = False
@@ -133,47 +61,26 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
 
-        # Status bar at top
-        status_group = QGroupBox("Status")
-        status_layout = QHBoxLayout(status_group)
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.setHandleWidth(10)
+        splitter.setOpaqueResize(True)
+        splitter.setChildrenCollapsible(True)
+        layout.addWidget(splitter, stretch=1)
+        self._main_splitter = splitter
+        self._default_splitter_sizes = [260, 420, 210]
 
-        self._midi_status = QLabel("MIDI: Not connected")
-        status_layout.addWidget(self._midi_status)
+        top_controls = QWidget()
+        top_controls.setMinimumHeight(0)
+        top_layout = QVBoxLayout(top_controls)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(10)
 
-        self._audio_status = QLabel("Audio: Ready")
-        status_layout.addWidget(self._audio_status)
-
-        self._sustain_status = QLabel("Sustain: Off")
-        status_layout.addWidget(self._sustain_status)
-
-        self._notes_status = QLabel("Notes: 0")
-        status_layout.addWidget(self._notes_status)
-
-        layout.addWidget(status_group)
-
-        # Controls row: Audio + Synthesizer
         top_row = QHBoxLayout()
-        layout.addLayout(top_row)
+        top_layout.addLayout(top_row)
 
-        # Audio group
-        audio_group = QGroupBox("Audio")
-        audio_layout = QHBoxLayout(audio_group)
-
-        audio_layout.addWidget(QLabel("Volume:"))
-        self._volume_slider = QSlider(Qt.Orientation.Horizontal)
-        self._volume_slider.setRange(0, 100)
-        self._volume_slider.setValue(80)
-        self._volume_slider.valueChanged.connect(self._on_volume_changed)
-        audio_layout.addWidget(self._volume_slider)
-
-        self._volume_label = QLabel("80%")
-        self._volume_label.setMinimumWidth(40)
-        audio_layout.addWidget(self._volume_label)
-
-        top_row.addWidget(audio_group)
-
-        # Synthesizer group
         synth_group = QGroupBox("Synthesizer")
         synth_layout = QVBoxLayout(synth_group)
 
@@ -182,12 +89,19 @@ class MainWindow(QMainWindow):
         self._synth_combo.currentTextChanged.connect(self._on_synth_changed)
         synth_layout.addWidget(self._synth_combo)
 
+        instrument_row = QHBoxLayout()
+        instrument_row.addWidget(QLabel("Instrument:"))
+        self._instrument_combo = QComboBox()
+        self._instrument_combo.addItems(["Piano", "Guitar"])
+        self._instrument_combo.currentTextChanged.connect(self._on_instrument_changed)
+        instrument_row.addWidget(self._instrument_combo)
+        synth_layout.addLayout(instrument_row)
+
         self._soundfont_btn = QPushButton("Load SoundFont...")
         self._soundfont_btn.clicked.connect(self._on_load_soundfont)
         self._soundfont_btn.setEnabled(False)
         synth_layout.addWidget(self._soundfont_btn)
 
-        # Metronome controls
         metro_layout = QHBoxLayout()
         self._metro_btn = QPushButton("Metronome")
         self._metro_btn.setCheckable(True)
@@ -198,15 +112,30 @@ class MainWindow(QMainWindow):
         self._bpm_spin.setRange(20, 300)
         self._bpm_spin.setValue(120)
         self._bpm_spin.setSuffix(" BPM")
+        self._bpm_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.UpDownArrows)
         self._bpm_spin.valueChanged.connect(self._on_bpm_changed)
         metro_layout.addWidget(self._bpm_spin)
-
         synth_layout.addLayout(metro_layout)
+
+        count_in_layout = QHBoxLayout()
+        self._count_in_check = QCheckBox("Count-in")
+        self._count_in_check.toggled.connect(self._on_count_in_toggled)
+        count_in_layout.addWidget(self._count_in_check)
+
+        self._count_in_spin = QSpinBox()
+        self._count_in_spin.setRange(1, 8)
+        self._count_in_spin.setValue(4)
+        self._count_in_spin.setSuffix(" beats")
+        self._count_in_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.UpDownArrows)
+        self._count_in_spin.setEnabled(False)
+        self._count_in_spin.valueChanged.connect(self._on_count_in_beats_changed)
+        count_in_layout.addWidget(self._count_in_spin)
+        count_in_layout.addStretch(1)
+        synth_layout.addLayout(count_in_layout)
 
         top_row.addWidget(synth_group)
 
-        # MIDI file group
-        midi_file_group = QGroupBox("MIDI File")
+        midi_file_group = QGroupBox("MIDI Editor")
         midi_file_layout = QVBoxLayout(midi_file_group)
 
         self._open_midi_btn = QPushButton("Open MIDI...")
@@ -224,8 +153,9 @@ class MainWindow(QMainWindow):
         midi_file_layout.addWidget(self._midi_file_label)
 
         top_row.addWidget(midi_file_group)
+        top_row.setStretch(0, 2)
+        top_row.setStretch(1, 2)
 
-        # MIDI library group
         library_group = QGroupBox("MIDI Library")
         library_layout = QVBoxLayout(library_group)
 
@@ -237,6 +167,7 @@ class MainWindow(QMainWindow):
         self._midi_refresh_btn = QPushButton("Refresh")
         self._midi_refresh_btn.clicked.connect(self._on_refresh_library)
         library_controls.addWidget(self._midi_refresh_btn)
+        library_controls.addStretch(1)
         library_layout.addLayout(library_controls)
 
         self._midi_folder_label = QLabel("Folder: Not set")
@@ -246,16 +177,69 @@ class MainWindow(QMainWindow):
         self._midi_list = QListWidget()
         self._midi_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._midi_list.itemDoubleClicked.connect(self._on_midi_item_activated)
-        self._midi_list.setMinimumHeight(100)
+        self._midi_list.setMinimumHeight(0)
         library_layout.addWidget(self._midi_list)
 
-        layout.addWidget(library_group)
+        top_layout.addWidget(library_group)
+        splitter.addWidget(top_controls)
 
-        # Recording group
-        record_group = QGroupBox("Recording")
+        notes_group = QGroupBox("Piano Roll Editor")
+        notes_layout = QVBoxLayout(notes_group)
+        notes_layout.setContentsMargins(8, 16, 8, 0)
+        notes_layout.setSpacing(6)
+
+        roll_controls = QHBoxLayout()
+        self._grid_check = QCheckBox("Grid")
+        self._grid_check.setChecked(True)
+        self._grid_check.toggled.connect(self._on_grid_toggled)
+        roll_controls.addWidget(self._grid_check)
+
+        self._snap_check = QCheckBox("Snap")
+        self._snap_check.setChecked(True)
+        self._snap_check.toggled.connect(self._on_snap_toggled)
+        roll_controls.addWidget(self._snap_check)
+
+        self._snap_combo = QComboBox()
+        snap_options = [("1/4", 1), ("1/8", 2), ("1/16", 4), ("1/32", 8)]
+        for label, value in snap_options:
+            self._snap_combo.addItem(label, value)
+        self._snap_combo.setCurrentIndex(2)
+        self._snap_combo.currentIndexChanged.connect(self._on_snap_division_changed)
+        roll_controls.addWidget(self._snap_combo)
+        roll_controls.addStretch(1)
+        notes_layout.addLayout(roll_controls)
+
+        self._falling_notes = FallingNotesWidget()
+        self._falling_notes.setMinimumHeight(140)
+        self._falling_notes.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._falling_notes.set_bpm(self._bpm_spin.value())
+        self._falling_notes.set_snap_enabled(self._snap_check.isChecked())
+        self._falling_notes.set_grid_enabled(self._grid_check.isChecked())
+        self._falling_notes.set_snap_division(self._snap_combo.currentData())
+        notes_layout.addWidget(self._falling_notes)
+
+        roll_container = QWidget()
+        roll_container.setMinimumHeight(180)
+        roll_layout = QVBoxLayout(roll_container)
+        roll_layout.setContentsMargins(0, 0, 0, 0)
+        roll_layout.setSpacing(0)
+        roll_layout.addWidget(notes_group, stretch=1)
+        self._keyboard = KeyboardWidget()
+        self._keyboard.setMinimumHeight(72)
+        self._keyboard.setMaximumHeight(112)
+        roll_layout.addWidget(self._keyboard)
+        splitter.addWidget(roll_container)
+
+        lower_panel = QWidget()
+        lower_panel.setMinimumHeight(0)
+        lower_layout = QVBoxLayout(lower_panel)
+        lower_layout.setContentsMargins(0, 0, 0, 0)
+        lower_layout.setSpacing(10)
+
+        record_group = QGroupBox("Transport / Recording")
+        record_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         record_main_layout = QVBoxLayout(record_group)
 
-        # Controls row
         record_controls = QHBoxLayout()
         record_main_layout.addLayout(record_controls)
 
@@ -288,23 +272,6 @@ class MainWindow(QMainWindow):
         self._play_btn.setEnabled(False)
         record_controls.addWidget(self._play_btn)
 
-        # Count-in controls
-        count_in_layout = QHBoxLayout()
-        self._count_in_check = QCheckBox("Count-in")
-        self._count_in_check.toggled.connect(self._on_count_in_toggled)
-        count_in_layout.addWidget(self._count_in_check)
-
-        self._count_in_spin = QSpinBox()
-        self._count_in_spin.setRange(1, 8)
-        self._count_in_spin.setValue(4)
-        self._count_in_spin.setSuffix(" beats")
-        self._count_in_spin.setEnabled(False)
-        self._count_in_spin.valueChanged.connect(self._on_count_in_beats_changed)
-        count_in_layout.addWidget(self._count_in_spin)
-        count_in_layout.addStretch(1)
-        record_main_layout.addLayout(count_in_layout)
-
-        # Timeline slider row
         timeline_layout = QHBoxLayout()
         self._timeline_label = QLabel("0:00")
         self._timeline_label.setMinimumWidth(40)
@@ -323,52 +290,63 @@ class MainWindow(QMainWindow):
         timeline_layout.addWidget(self._duration_label)
 
         record_main_layout.addLayout(timeline_layout)
+        lower_layout.addWidget(record_group)
 
-        layout.addWidget(record_group)
+        status_group = QGroupBox("Status")
+        status_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        status_layout = QVBoxLayout(status_group)
+        status_layout.setSpacing(8)
 
-        # Falling notes visualization (above keyboard for visual flow)
-        notes_group = QGroupBox("Piano Roll")
-        notes_layout = QVBoxLayout(notes_group)
-        notes_layout.setContentsMargins(8, 16, 8, 0)
-        notes_layout.setSpacing(6)
+        status_row = QHBoxLayout()
+        self._midi_status = QLabel("Input: Not connected")
+        status_row.addWidget(self._midi_status)
+        self._audio_status = QLabel("Audio: Default output")
+        status_row.addWidget(self._audio_status)
+        self._sustain_status = QLabel("Sustain: Off")
+        status_row.addWidget(self._sustain_status)
+        self._notes_status = QLabel("Notes: 0")
+        status_row.addWidget(self._notes_status)
 
-        roll_controls = QHBoxLayout()
-        self._grid_check = QCheckBox("Grid")
-        self._grid_check.setChecked(True)
-        self._grid_check.toggled.connect(self._on_grid_toggled)
-        roll_controls.addWidget(self._grid_check)
+        self._reset_layout_btn = QPushButton("Reset Layout")
+        self._reset_layout_btn.clicked.connect(self._on_reset_layout_clicked)
+        status_row.addWidget(self._reset_layout_btn)
+        status_row.addStretch(1)
+        status_layout.addLayout(status_row)
 
-        self._snap_check = QCheckBox("Snap")
-        self._snap_check.setChecked(True)
-        self._snap_check.toggled.connect(self._on_snap_toggled)
-        roll_controls.addWidget(self._snap_check)
+        selector_row = QHBoxLayout()
+        selector_row.addWidget(QLabel("MIDI Input:"))
+        self._midi_input_combo = QComboBox()
+        self._midi_input_combo.currentIndexChanged.connect(self._on_midi_input_selected)
+        selector_row.addWidget(self._midi_input_combo)
 
-        self._snap_combo = QComboBox()
-        snap_options = [("1/4", 1), ("1/8", 2), ("1/16", 4), ("1/32", 8)]
-        for label, value in snap_options:
-            self._snap_combo.addItem(label, value)
-        self._snap_combo.setCurrentIndex(2)
-        self._snap_combo.currentIndexChanged.connect(self._on_snap_division_changed)
-        roll_controls.addWidget(self._snap_combo)
-        roll_controls.addStretch(1)
-        notes_layout.addLayout(roll_controls)
+        selector_row.addWidget(QLabel("Audio Output:"))
+        self._audio_output_combo = QComboBox()
+        self._audio_output_combo.currentIndexChanged.connect(self._on_audio_output_selected)
+        selector_row.addWidget(self._audio_output_combo)
+        status_layout.addLayout(selector_row)
 
-        self._falling_notes = FallingNotesWidget()
-        self._falling_notes.set_bpm(self._bpm_spin.value())
-        self._falling_notes.set_snap_enabled(self._snap_check.isChecked())
-        self._falling_notes.set_grid_enabled(self._grid_check.isChecked())
-        self._falling_notes.set_snap_division(self._snap_combo.currentData())
-        notes_layout.addWidget(self._falling_notes)
-        roll_container = QWidget()
-        roll_layout = QVBoxLayout(roll_container)
-        roll_layout.setContentsMargins(0, 0, 0, 0)
-        roll_layout.setSpacing(0)
-        roll_layout.addWidget(notes_group, stretch=1)
+        volume_row = QHBoxLayout()
+        volume_row.addWidget(QLabel("Volume:"))
+        self._volume_slider = QSlider(Qt.Orientation.Horizontal)
+        self._volume_slider.setRange(0, 100)
+        self._volume_slider.setValue(80)
+        self._volume_slider.valueChanged.connect(self._on_volume_changed)
+        volume_row.addWidget(self._volume_slider)
+        self._volume_label = QLabel("80%")
+        self._volume_label.setMinimumWidth(40)
+        volume_row.addWidget(self._volume_label)
+        status_layout.addLayout(volume_row)
 
-        # Keyboard visualization (below falling notes)
-        self._keyboard = KeyboardWidget()
-        roll_layout.addWidget(self._keyboard)
-        layout.addWidget(roll_container, stretch=1)  # Let this expand
+        lower_layout.addWidget(status_group)
+        splitter.addWidget(lower_panel)
+        splitter.setCollapsible(0, True)
+        splitter.setCollapsible(1, False)
+        splitter.setCollapsible(2, True)
+
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setStretchFactor(2, 0)
+        splitter.setSizes(self._default_splitter_sizes)
 
         # Connect falling notes time updates and keyboard visualization
         self._falling_notes.time_changed.connect(self._on_time_changed)
@@ -384,15 +362,22 @@ class MainWindow(QMainWindow):
 
     def _apply_dark_mode(self):
         """Apply dark mode stylesheet."""
-        self.setStyleSheet(self.DARK_STYLE)
+        self.setStyleSheet(APP_STYLE)
 
     def _on_volume_changed(self, value: int):
         self._volume_label.setText(f"{value}%")
         self.volume_changed.emit(value / 100.0)
 
+    def _on_reset_layout_clicked(self):
+        if hasattr(self, "_main_splitter"):
+            self._main_splitter.setSizes(self._default_splitter_sizes)
+
     def _on_synth_changed(self, text: str):
         self._soundfont_btn.setEnabled(text == "SoundFont")
         self.synth_changed.emit(text)
+
+    def _on_instrument_changed(self, text: str):
+        self.instrument_changed.emit(text)
 
     def _on_load_soundfont(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -448,6 +433,17 @@ class MainWindow(QMainWindow):
 
     def _on_count_in_beats_changed(self, value: int):
         self.count_in_beats_changed.emit(value)
+
+    def _on_midi_input_selected(self, _index: int):
+        port_name = self._midi_input_combo.currentData()
+        self.midi_input_changed.emit(str(port_name or ""))
+
+    def _on_audio_output_selected(self, _index: int):
+        value = self._audio_output_combo.currentData()
+        try:
+            self.audio_output_changed.emit(int(value))
+        except (TypeError, ValueError):
+            self.audio_output_changed.emit(-1)
 
     def _on_snap_toggled(self, checked: bool):
         self._falling_notes.set_snap_enabled(checked)
@@ -621,11 +617,62 @@ class MainWindow(QMainWindow):
         self._synth_combo.blockSignals(False)
         self._soundfont_btn.setEnabled(name == "SoundFont")
 
+    def set_instrument_selection(self, name: str):
+        index = self._instrument_combo.findText(name)
+        if index < 0:
+            return
+        self._instrument_combo.blockSignals(True)
+        self._instrument_combo.setCurrentIndex(index)
+        self._instrument_combo.blockSignals(False)
+
     def set_midi_status(self, connected: bool, name: str = ""):
         if connected:
-            self._midi_status.setText(f"MIDI: {name}")
+            self._midi_status.setText(f"Input: {name}")
         else:
-            self._midi_status.setText("MIDI: Not connected")
+            self._midi_status.setText("Input: Not connected")
+
+    def set_audio_status(self, ready: bool, device_name: str = ""):
+        if ready:
+            if device_name:
+                self._audio_status.setText(f"Audio: {device_name}")
+            else:
+                self._audio_status.setText("Audio: Ready")
+        else:
+            self._audio_status.setText("Audio: Unavailable")
+
+    def set_midi_inputs(self, ports: list[str], selected: str | None):
+        self._midi_input_combo.blockSignals(True)
+        self._midi_input_combo.clear()
+        self._midi_input_combo.addItem("Auto-select", "")
+        for port in ports:
+            self._midi_input_combo.addItem(port, port)
+
+        if selected:
+            index = self._midi_input_combo.findData(selected)
+            if index < 0:
+                index = self._midi_input_combo.findText(selected)
+            if index < 0:
+                index = 0
+        else:
+            index = 0
+        self._midi_input_combo.setCurrentIndex(index)
+        self._midi_input_combo.blockSignals(False)
+
+    def set_audio_outputs(self, outputs: list[tuple[int, str]], selected: int | None):
+        self._audio_output_combo.blockSignals(True)
+        self._audio_output_combo.clear()
+        self._audio_output_combo.addItem("Default", -1)
+        for device_index, device_name in outputs:
+            self._audio_output_combo.addItem(device_name, int(device_index))
+
+        if selected is None:
+            index = 0
+        else:
+            index = self._audio_output_combo.findData(int(selected))
+            if index < 0:
+                index = 0
+        self._audio_output_combo.setCurrentIndex(index)
+        self._audio_output_combo.blockSignals(False)
 
     def set_sustain_status(self, on: bool):
         self._sustain_status.setText(f"Sustain: {'On' if on else 'Off'}")

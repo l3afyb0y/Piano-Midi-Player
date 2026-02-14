@@ -3,28 +3,18 @@ set -euo pipefail
 
 script_path="$(readlink -f "${BASH_SOURCE[0]}")"
 root="$(cd "$(dirname "$script_path")/.." && pwd)"
-app_name="Piano Player"
-binary="$root/dist/$app_name/$app_name"
-
-needs_build=0
-if [[ ! -x "$binary" ]]; then
-    needs_build=1
-else
-    if find "$root" \
-        -path "$root/.git" -prune -o \
-        -path "$root/.venv" -prune -o \
-        -path "$root/build" -prune -o \
-        -path "$root/dist" -prune -o \
-        -path "$root/__pycache__" -prune -o \
-        -path "$root/.worktrees" -prune -o \
-        -type f \( -name '*.py' -o -name 'requirements*.txt' -o -name '*.sf2' -o -name 'piano-player.desktop' \) \
-        -newer "$binary" -print -quit | grep -q .; then
-        needs_build=1
-    fi
+if [[ -n "${PIANO_PLAYER_USE_BINARY:-}" ]]; then
+    app_name="Piano Player"
+    binary="$root/dist/$app_name/$app_name"
+    exec "$binary" "$@"
 fi
 
-if [[ "$needs_build" -eq 1 ]]; then
-    python "$root/scripts/build_app.py"
+if [[ -x "$root/.venv/bin/python" ]]; then
+    exec "$root/.venv/bin/python" "$root/main.py" "$@"
 fi
 
-exec "$binary" "$@"
+if command -v python3 >/dev/null 2>&1; then
+    exec python3 "$root/main.py" "$@"
+fi
+
+exec python "$root/main.py" "$@"

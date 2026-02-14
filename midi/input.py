@@ -109,6 +109,8 @@ class MidiInputHandler:
         if self._midi_in:
             self._midi_in.cancel_callback()
             self._midi_in.close_port()
+            self._midi_in = None
+        self._connected_port = None
 
     @staticmethod
     def list_ports() -> List[str]:

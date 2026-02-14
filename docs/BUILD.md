@@ -1,19 +1,11 @@
 # Build App
 
-This project can be packaged into a standalone app with PyInstaller.
+Package Piano Player into a standalone app with PyInstaller.
 
-## Install build tools
+## Install build tooling
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-pip install -r requirements-dev.txt
-```
-
-Windows PowerShell:
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 pip install -r requirements-dev.txt
 ```
@@ -23,16 +15,18 @@ pip install -r requirements-dev.txt
 python scripts/build_app.py
 ```
 
-Notes:
-- If you installed app deps in `.venv`, the build script will pull them in automatically.
-- Using system PyInstaller (e.g., from `pacman`) is fine as long as runtime libs are installed.
-
-Output goes to `dist/`:
+Output is written to `dist/`:
+- Linux: `dist/Piano Player/Piano Player`
 - Windows: `dist/Piano Player/Piano Player.exe`
 - macOS: `dist/Piano Player.app`
-- Linux: `dist/Piano Player/Piano Player`
 
-## Programs list
-- Windows: create a Start Menu shortcut to the built `.exe` (or wrap it in an installer).
-- macOS: move `Piano Player.app` into `/Applications`.
-- Linux: run `bash scripts/install_desktop.sh` to install a `.desktop` entry and launcher.
+## Desktop launcher
+After building, install launcher files using:
+```bash
+bash scripts/install_desktop.sh
+```
+
+For system-wide launcher install:
+```bash
+bash scripts/install_desktop.sh --system
+```

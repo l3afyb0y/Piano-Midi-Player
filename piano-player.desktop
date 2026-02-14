@@ -1,10 +1,13 @@
 [Desktop Entry]
+Version=1.0
 Type=Application
 Name=Piano Player
-Comment=Play and edit MIDI files with a piano roll
-# Run scripts/install_desktop.sh to set Exec to your launcher path.
+GenericName=MIDI Piano Player
+Comment=Play, record, and edit MIDI with a falling-note piano roll
 Exec=piano-player
 Icon=piano-player
 Terminal=false
-Categories=AudioVideo;Music;
+Categories=AudioVideo;Audio;Music;
 MimeType=audio/midi;audio/x-midi;audio/mid;application/x-midi;
+Keywords=midi;piano;music;metronome;keyboard;
+StartupNotify=true

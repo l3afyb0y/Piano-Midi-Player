@@ -9,3 +9,10 @@ recordings/
 build/
 dist/
 *.spec
+.pytest_cache/
+dev/
+pkg/
+src/
+Piano-Midi-Player/
+*.pkg.tar.zst
+.directory

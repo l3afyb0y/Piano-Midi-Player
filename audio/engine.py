@@ -2,6 +2,7 @@
 
 import threading
 import queue
+import os
 import numpy as np
 from typing import Optional, Protocol, Callable
 import sounddevice as sd
@@ -17,13 +18,21 @@ class Synthesizer(Protocol):
 class AudioEngine:
     """Manages audio generation and output."""
 
-    def __init__(self, sample_rate: int = 44100, buffer_size: int = 256):
+    def __init__(self, sample_rate: int = 44100, buffer_size: int = 384):
         self.sample_rate = sample_rate
-        self.buffer_size = buffer_size  # 256 @ 44.1kHz = ~6ms per buffer
+        env_buffer = os.environ.get("PIANO_PLAYER_BUFFER_SIZE", "").strip()
+        if env_buffer:
+            try:
+                buffer_size = max(128, int(env_buffer))
+            except ValueError:
+                pass
+        self.buffer_size = buffer_size  # 384 @ 44.1kHz ~= 8.7ms, more underrun-resistant than 256
+        self._latency_hint = self._parse_latency_hint(os.environ.get("PIANO_PLAYER_AUDIO_LATENCY", ""))
         self._volume = 0.8
         self._synth: Optional[Synthesizer] = None
         self._stream: Optional[sd.OutputStream] = None
         self._running = False
+        self._output_device: Optional[int] = None
         self._synth_lock = threading.Lock()  # Only for synth swapping, not generation
         self._audio_callback_fn: Optional[Callable[[np.ndarray], None]] = None
         self._mix_queue: queue.SimpleQueue = queue.SimpleQueue()
@@ -34,6 +43,18 @@ class AudioEngine:
     def volume(self) -> float:
         return self._volume
 
+    @staticmethod
+    def _parse_latency_hint(raw: str):
+        value = (raw or "").strip().lower()
+        if not value:
+            return None
+        if value in ("low", "high"):
+            return value
+        try:
+            return max(0.0, float(value))
+        except ValueError:
+            return None
+
     @volume.setter
     def volume(self, value: float):
         self._volume = max(0.0, min(1.0, value))
@@ -42,6 +63,58 @@ class AudioEngine:
         """Set the synthesizer to use."""
         with self._synth_lock:
             self._synth = synth
+
+    @property
+    def output_device(self) -> Optional[int]:
+        return self._output_device
+
+    @staticmethod
+    def list_output_devices() -> list[tuple[int, str]]:
+        """Return available output devices as (index, name)."""
+        devices = sd.query_devices()
+        outputs: list[tuple[int, str]] = []
+        for idx, dev in enumerate(devices):
+            if dev.get("max_output_channels", 0) > 0:
+                outputs.append((idx, dev.get("name", f"Device {idx}")))
+        return outputs
+
+    @staticmethod
+    def default_output_device() -> Optional[int]:
+        default_dev = sd.default.device
+        if isinstance(default_dev, (list, tuple)) and len(default_dev) > 1:
+            output_idx = default_dev[1]
+            if isinstance(output_idx, int) and output_idx >= 0:
+                return output_idx
+        return None
+
+    def set_output_device(self, device_index: Optional[int]) -> bool:
+        """Set active output device. Restarts stream if already running."""
+        if device_index is not None and device_index < 0:
+            device_index = None
+        if self._output_device == device_index:
+            return True
+
+        previous = self._output_device
+        was_running = self._running
+        if was_running:
+            self.stop()
+
+        self._output_device = device_index
+        if not was_running:
+            return True
+
+        try:
+            self.start()
+            return True
+        except Exception as exc:
+            print(f"Failed to set audio output device: {exc}")
+            self._output_device = previous
+            if previous != device_index:
+                try:
+                    self.start()
+                except Exception as restart_exc:
+                    print(f"Failed to restart previous audio output: {restart_exc}")
+            return False
 
     def set_audio_callback(self, callback: Optional[Callable[[np.ndarray], None]]):
         """Set callback to receive generated audio (for recording)."""
@@ -87,7 +160,7 @@ class AudioEngine:
                 if self._mix_index >= len(self._mix_current):
                     self._mix_current = None
 
-        outdata[:, 0] = buffer
+        outdata[:, 0] = np.clip(buffer, -1.0, 1.0)
 
         # Notify callback (for recording)
         if self._audio_callback_fn:
@@ -101,7 +174,8 @@ class AudioEngine:
             channels=1,
             dtype=np.float32,
             callback=self._audio_callback,
-            latency='low',  # Low latency for responsive playing
+            device=self._output_device,
+            latency=self._latency_hint,
         )
         self._stream.start()
         self._running = True
