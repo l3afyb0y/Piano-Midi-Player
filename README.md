@@ -58,6 +58,11 @@ python -m pip install --user sounddevice
 ```bash
 bash scripts/install_linux.sh
 ```
+The Linux installer downloads two default CC0 SoundFonts (piano + clean electric guitar).
+To skip that step:
+```bash
+bash scripts/install_linux.sh --no-default-soundfonts
+```
 
 ## Run
 ```bash
@@ -68,7 +73,30 @@ python main.py
 You can provide an `.sf2` by:
 - placing it in `soundfonts/`
 - setting `PIANO_PLAYER_SOUNDFONT` (or `SOUNDFONT_PATH`)
+- setting per-instrument overrides:
+  - `PIANO_PLAYER_SOUNDFONT_PIANO`
+  - `PIANO_PLAYER_SOUNDFONT_GUITAR`
 - using **Load SoundFont...** inside the app
+
+Default bundled/fetched presets:
+- `Piano`: `UprightPianoKW-small-20190703.sf2` (FreePats, CC0)
+- `Guitar`: `EGuitarFSBS-bridge-clean-small-20220911.sf2` (FreePats, CC0 clean electric)
+
+To manually fetch/update those defaults in a source checkout:
+```bash
+bash scripts/download_default_soundfonts.sh
+```
+
+SoundFont selection is per instrument. For example, you can load one `.sf2` for `Piano`
+and a different `.sf2` for `Guitar`; each is remembered independently.
+The Synthesizer panel includes:
+- a per-instrument SoundFont preset dropdown (`Auto` + discovered `.sf2` files)
+- **Load \<Instrument> SoundFont...** for bringing in custom files
+
+Redistribution note:
+- only ship bundled SoundFonts you are licensed to redistribute
+- include license/attribution text for each bundled SoundFont in your distribution/docs
+- default curated set is CC0 (see `soundfonts/*CC0.txt` when installed)
 
 If no SoundFont is available, Piano Player uses the built-in simple synth.
 

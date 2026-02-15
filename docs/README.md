@@ -1,7 +1,7 @@
 # Documentation
 
 ## Build and distribution
-- `docs/BUILD.md`: PyInstaller build and launcher notes.
+- `docs/BUILD.md`: PyInstaller build steps and launcher setup.
 
 ## Packaging and install
 - `PKGBUILD`: Arch/AUR source package definition.
@@ -11,11 +11,7 @@
 - `scripts/install_arch.sh`: convenience wrapper around `makepkg -si` (`--dev` uses `dev/PKGBUILD`).
 - `scripts/install_linux.sh`: Generic Linux installer.
 - `scripts/install.sh`: Compatibility wrapper.
-
-## Design notes
-- `docs/plans/2026-01-02-piano-player-design.md`: original product/design notes.
-- `docs/plans/2026-01-02-piano-player-implementation.md`: initial implementation plan.
-- `docs/plans/2026-01-11-piano-roll-editor-design.md`: piano-roll editing design notes.
+- `scripts/download_default_soundfonts.sh`: fetches default CC0 piano and clean electric guitar SoundFonts.
 
 ## Current UI/audio behavior
 - Synth section supports backend choice (`Simple Synth` / `SoundFont`) and instrument choice (`Piano` / `Guitar`).

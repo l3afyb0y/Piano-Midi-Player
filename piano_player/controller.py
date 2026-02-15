@@ -15,7 +15,12 @@ from gui.falling_notes_widget import NoteEvent, SustainEvent
 from gui.main_window import MainWindow
 from midi.input import MidiInputThread, MidiMessage
 from midi.recorder import MidiRecorder
-from piano_player.config import find_default_soundfont, resolve_midi_directory
+from piano_player.config import (
+    find_default_soundfont,
+    is_valid_soundfont_file,
+    list_soundfont_candidates,
+    resolve_midi_directory,
+)
 from piano_player.services.midi_files import MidiFileService
 from piano_player.services.midi_library import MidiLibraryService
 from recording.wav_recorder import WavRecorder
@@ -25,14 +30,18 @@ class PianoPlayerController(QObject):
     """Coordinates UI, MIDI input, recording, and audio playback."""
 
     midi_received = pyqtSignal(object)
+    SUPPORTED_INSTRUMENTS = ("Piano", "Guitar")
 
     def __init__(self):
         super().__init__()
 
         self._settings = QSettings()
-        self._soundfont_path = self._settings.value("soundfont_path", "", type=str) or None
         self._preferred_synth = self._settings.value("synth_preference", "Simple Synth", type=str)
-        self._preferred_instrument = self._settings.value("instrument_preference", "Piano", type=str)
+        saved_instrument = self._settings.value("instrument_preference", "Piano", type=str)
+        self._preferred_instrument = self._normalize_instrument(saved_instrument)
+        self._soundfont_paths = self._load_soundfont_paths()
+        self._soundfont_path = self._soundfont_paths.get(self._preferred_instrument)
+        self._active_soundfont_path: str | None = None
         self._autoload_soundfont = self._preferred_synth == "SoundFont"
         self._synth_name = "Simple Synth"
         self._cleanup_synths = []
@@ -68,6 +77,9 @@ class PianoPlayerController(QObject):
 
         self._window.set_synth_selection(self._synth_name)
         self._window.set_instrument_selection(self._preferred_instrument)
+        for instrument, path in self._soundfont_paths.items():
+            self._window.set_instrument_soundfont_path(instrument, path)
+        self._refresh_soundfont_options()
         self._window.set_midi_folder(str(self._midi_library.midi_dir))
 
         self._midi_thread.add_callback(self._on_midi_message)
@@ -83,9 +95,74 @@ class PianoPlayerController(QObject):
         print("Using simple synthesizer")
         return SimpleSynth(instrument=self._preferred_instrument)
 
+    def _normalize_instrument(self, instrument: str | None) -> str:
+        if instrument in self.SUPPORTED_INSTRUMENTS:
+            return instrument
+        return "Piano"
+
+    @staticmethod
+    def _soundfont_key(instrument: str) -> str:
+        return f"soundfont_path_{instrument.lower()}"
+
+    def _load_soundfont_paths(self) -> dict[str, str]:
+        paths: dict[str, str] = {}
+        for instrument in self.SUPPORTED_INSTRUMENTS:
+            path = self._settings.value(self._soundfont_key(instrument), "", type=str) or ""
+            if path:
+                paths[instrument] = path
+
+        # Backward compatibility for installs that only had one global key.
+        legacy = self._settings.value("soundfont_path", "", type=str) or ""
+        if legacy:
+            for instrument in self.SUPPORTED_INSTRUMENTS:
+                paths.setdefault(instrument, legacy)
+        return paths
+
+    def _set_soundfont_for_instrument(self, instrument: str, path: str):
+        selected = self._normalize_instrument(instrument)
+        normalized_path = os.path.abspath(path)
+        self._soundfont_paths[selected] = normalized_path
+        self._settings.setValue(self._soundfont_key(selected), normalized_path)
+        # Keep legacy key for compatibility with previous versions.
+        self._settings.setValue("soundfont_path", normalized_path)
+        if selected == self._preferred_instrument:
+            self._soundfont_path = normalized_path
+        self._window.set_instrument_soundfont_path(selected, normalized_path)
+        self._refresh_soundfont_options(selected)
+
+    def _clear_soundfont_for_instrument(self, instrument: str):
+        selected = self._normalize_instrument(instrument)
+        self._soundfont_paths.pop(selected, None)
+        self._settings.remove(self._soundfont_key(selected))
+        if selected == self._preferred_instrument:
+            self._soundfont_path = None
+        self._window.set_instrument_soundfont_path(selected, None)
+        self._refresh_soundfont_options(selected)
+
+    def _refresh_soundfont_options(self, instrument: str | None = None):
+        targets = (self._normalize_instrument(instrument),) if instrument else self.SUPPORTED_INSTRUMENTS
+        for selected in targets:
+            choices: list[tuple[str, str]] = [("Auto (Best Available)", "")]
+            candidates = list_soundfont_candidates(selected)
+            configured = self._soundfont_paths.get(selected)
+            if configured and os.path.exists(configured) and configured not in candidates:
+                candidates.insert(0, configured)
+            for path in candidates:
+                label = os.path.basename(path)
+                choices.append((label, path))
+            self._window.set_soundfont_options(selected, choices, configured)
+
+    def _preferred_soundfont_for_instrument(self, instrument: str) -> str | None:
+        selected = self._normalize_instrument(instrument)
+        configured = self._soundfont_paths.get(selected)
+        if configured and os.path.exists(configured):
+            return configured
+        return find_default_soundfont(selected)
+
     def _apply_instrument(self, instrument: str):
-        selected = instrument if instrument in ("Piano", "Guitar") else "Piano"
+        selected = self._normalize_instrument(instrument)
         self._preferred_instrument = selected
+        self._soundfont_path = self._soundfont_paths.get(selected)
         self._settings.setValue("instrument_preference", selected)
         if hasattr(self._synth, "set_instrument"):
             try:
@@ -93,8 +170,10 @@ class PianoPlayerController(QObject):
             except Exception as exc:
                 print(f"Failed to set instrument '{selected}': {exc}")
         self._window.set_instrument_selection(selected)
+        self._window.set_instrument_soundfont_path(selected, self._soundfont_path)
+        self._refresh_soundfont_options(selected)
 
-    def _set_synth(self, synth, name: str, soundfont_path: str | None = None):
+    def _set_synth(self, synth, name: str):
         if self._synth is not synth and hasattr(self._synth, "cleanup"):
             if self._synth not in self._cleanup_synths:
                 self._cleanup_synths.append(self._synth)
@@ -105,23 +184,27 @@ class PianoPlayerController(QObject):
         self._preferred_synth = name
         self._autoload_soundfont = name == "SoundFont"
         self._settings.setValue("synth_preference", name)
-        if soundfont_path is not None:
-            self._soundfont_path = soundfont_path
-            self._settings.setValue("soundfont_path", soundfont_path)
         self._apply_instrument(self._preferred_instrument)
         self._window.set_synth_selection(name)
 
-    def _load_soundfont(self, path: str) -> bool:
+    def _load_soundfont(self, path: str, instrument: str | None = None) -> bool:
         try:
             from audio.soundfont_synth import SoundFontSynth
         except ImportError:
             print("SoundFont support not available (install pyfluidsynth)")
             return False
 
+        selected = self._normalize_instrument(instrument or self._preferred_instrument)
+        normalized_path = os.path.abspath(path)
         sf_synth = SoundFontSynth()
-        if sf_synth.load_soundfont(path):
-            self._set_synth(sf_synth, "SoundFont", soundfont_path=path)
+        if sf_synth.load_soundfont(normalized_path):
+            self._set_synth(sf_synth, "SoundFont")
+            self._active_soundfont_path = normalized_path
+            self._set_soundfont_for_instrument(selected, normalized_path)
+            self._apply_instrument(selected)
             return True
+        if hasattr(sf_synth, "cleanup"):
+            sf_synth.cleanup()
         return False
 
     def _get_active_note_count(self) -> int:
@@ -142,6 +225,7 @@ class PianoPlayerController(QObject):
         self._window.synth_changed.connect(self._on_synth_changed)
         self._window.instrument_changed.connect(self._on_instrument_changed)
         self._window.soundfont_loaded.connect(self._on_soundfont_loaded)
+        self._window.soundfont_selected.connect(self._on_soundfont_selected)
         self._window.record_toggled.connect(self._on_record_toggled)
         self._window.save_wav.connect(self._on_save_wav)
         self._window.save_midi.connect(self._on_save_midi)
@@ -229,18 +313,59 @@ class PianoPlayerController(QObject):
         if hasattr(self._synth, "_fs"):
             return
 
-        soundfont_path = self._soundfont_path or find_default_soundfont()
-        if soundfont_path and self._load_soundfont(soundfont_path):
+        soundfont_path = self._preferred_soundfont_for_instrument(self._preferred_instrument)
+        if soundfont_path and self._load_soundfont(soundfont_path, instrument=self._preferred_instrument):
             return
 
-        print("SoundFont selected but no file is loaded yet.")
+        print(f"SoundFont selected but no file is loaded yet for {self._preferred_instrument}.")
 
     def _on_instrument_changed(self, instrument: str):
         self._apply_instrument(instrument)
+        if self._synth_name != "SoundFont":
+            return
+
+        preferred_path = self._preferred_soundfont_for_instrument(self._preferred_instrument)
+        if not preferred_path:
+            return
+        if self._active_soundfont_path and os.path.abspath(preferred_path) == self._active_soundfont_path:
+            return
+        if not self._load_soundfont(preferred_path, instrument=self._preferred_instrument):
+            print(f"Failed to load SoundFont for {self._preferred_instrument}: {preferred_path}")
 
     def _on_soundfont_loaded(self, path: str):
-        if not self._load_soundfont(path):
+        if not self._load_soundfont(path, instrument=self._preferred_instrument):
             print("Failed to load SoundFont.")
+
+    def _on_soundfont_selected(self, path: str):
+        selected = self._preferred_instrument
+        normalized = os.path.abspath(path) if path else ""
+        if not normalized:
+            self._clear_soundfont_for_instrument(selected)
+            fallback = find_default_soundfont(selected)
+            if self._synth_name == "SoundFont":
+                if fallback and (not self._active_soundfont_path or os.path.abspath(fallback) != self._active_soundfont_path):
+                    if not self._load_soundfont(fallback, instrument=selected):
+                        print(f"Failed to load auto SoundFont for {selected}.")
+                elif not fallback:
+                    print(f"No SoundFont available for {selected}.")
+            return
+
+        if not is_valid_soundfont_file(normalized):
+            print(f"Invalid SoundFont file: {normalized}")
+            self._refresh_soundfont_options(selected)
+            return
+
+        if self._synth_name == "SoundFont":
+            if self._active_soundfont_path and self._active_soundfont_path == normalized:
+                self._set_soundfont_for_instrument(selected, normalized)
+                return
+            if not self._load_soundfont(normalized, instrument=selected):
+                print(f"Failed to load selected SoundFont for {selected}: {normalized}")
+                self._refresh_soundfont_options(selected)
+                return
+            return
+
+        self._set_soundfont_for_instrument(selected, normalized)
 
     def _on_record_toggled(self, recording: bool):
         if recording:
@@ -513,11 +638,11 @@ class PianoPlayerController(QObject):
         if not self._autoload_soundfont or self._synth_name == "SoundFont":
             return
 
-        path = self._soundfont_path or find_default_soundfont()
+        path = self._preferred_soundfont_for_instrument(self._preferred_instrument)
         if not path:
             return
 
-        if self._load_soundfont(path):
+        if self._load_soundfont(path, instrument=self._preferred_instrument):
             print(f"Auto-loaded preferred SoundFont: {path}")
 
     def stop(self):

@@ -21,6 +21,7 @@ class MainWindow(QMainWindow):
     synth_changed = pyqtSignal(str)
     instrument_changed = pyqtSignal(str)
     soundfont_loaded = pyqtSignal(str)
+    soundfont_selected = pyqtSignal(str)
     record_toggled = pyqtSignal(bool)
     save_wav = pyqtSignal(str)
     save_midi = pyqtSignal(str)
@@ -50,6 +51,9 @@ class MainWindow(QMainWindow):
         self._record_time = 0
         self._midi_file_path: str | None = None
         self._midi_dir: str | None = None
+        self._instrument_soundfonts: dict[str, str] = {}
+        self._instrument_soundfont_options: dict[str, list[tuple[str, str]]] = {}
+        self._instrument_selected_soundfont: dict[str, str | None] = {}
 
         self._setup_ui()
         self._setup_timer()
@@ -97,10 +101,20 @@ class MainWindow(QMainWindow):
         instrument_row.addWidget(self._instrument_combo)
         synth_layout.addLayout(instrument_row)
 
+        soundfont_row = QHBoxLayout()
+        soundfont_row.addWidget(QLabel("SoundFont:"))
+        self._soundfont_combo = QComboBox()
+        self._soundfont_combo.currentIndexChanged.connect(self._on_soundfont_selected)
+        soundfont_row.addWidget(self._soundfont_combo)
+        synth_layout.addLayout(soundfont_row)
+
         self._soundfont_btn = QPushButton("Load SoundFont...")
         self._soundfont_btn.clicked.connect(self._on_load_soundfont)
         self._soundfont_btn.setEnabled(False)
         synth_layout.addWidget(self._soundfont_btn)
+        self._soundfont_path_label = QLabel("Piano SF2: auto/default")
+        self._soundfont_path_label.setWordWrap(True)
+        synth_layout.addWidget(self._soundfont_path_label)
 
         metro_layout = QHBoxLayout()
         self._metro_btn = QPushButton("Metronome")
@@ -355,6 +369,32 @@ class MainWindow(QMainWindow):
         self._falling_notes.events_changed.connect(self._on_events_changed)
         self._slider_dragging = False
 
+    def _refresh_soundfont_ui(self):
+        instrument = self._instrument_combo.currentText() or "Piano"
+        self._soundfont_btn.setText(f"Load {instrument} SoundFont...")
+
+        options = self._instrument_soundfont_options.get(instrument, [("Auto (Best Available)", "")])
+        selected = self._instrument_selected_soundfont.get(instrument)
+        self._soundfont_combo.blockSignals(True)
+        self._soundfont_combo.clear()
+        for label, value in options:
+            self._soundfont_combo.addItem(label, value)
+        if selected:
+            selected_idx = self._soundfont_combo.findData(selected)
+            self._soundfont_combo.setCurrentIndex(selected_idx if selected_idx >= 0 else 0)
+        else:
+            self._soundfont_combo.setCurrentIndex(0)
+        self._soundfont_combo.blockSignals(False)
+
+        self._soundfont_combo.setEnabled(self._synth_combo.currentText() == "SoundFont")
+        path = selected or self._instrument_soundfonts.get(instrument)
+        if path:
+            self._soundfont_path_label.setText(f"{instrument} SF2: {os.path.basename(path)}")
+            self._soundfont_path_label.setToolTip(path)
+        else:
+            self._soundfont_path_label.setText(f"{instrument} SF2: auto/default")
+            self._soundfont_path_label.setToolTip("")
+
     def _setup_timer(self):
         """Setup timer for recording time display."""
         self._timer = QTimer()
@@ -374,17 +414,35 @@ class MainWindow(QMainWindow):
 
     def _on_synth_changed(self, text: str):
         self._soundfont_btn.setEnabled(text == "SoundFont")
+        self._refresh_soundfont_ui()
         self.synth_changed.emit(text)
 
     def _on_instrument_changed(self, text: str):
+        self._refresh_soundfont_ui()
         self.instrument_changed.emit(text)
 
     def _on_load_soundfont(self):
+        current_instrument = self._instrument_combo.currentText() or "Piano"
+        configured = self._instrument_selected_soundfont.get(current_instrument) or self._instrument_soundfonts.get(current_instrument, "")
+        start_dir = os.path.dirname(configured) if configured else ""
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load SoundFont", "", "SoundFont Files (*.sf2)"
+            self, f"Load {current_instrument} SoundFont", start_dir, "SoundFont Files (*.sf2)"
         )
         if path:
             self.soundfont_loaded.emit(path)
+
+    def _on_soundfont_selected(self, _index: int):
+        instrument = self._instrument_combo.currentText() or "Piano"
+        data = self._soundfont_combo.currentData()
+        path = str(data) if data else ""
+        if path:
+            self._instrument_selected_soundfont[instrument] = path
+            self._instrument_soundfonts[instrument] = path
+        else:
+            self._instrument_selected_soundfont[instrument] = None
+            self._instrument_soundfonts.pop(instrument, None)
+        self._refresh_soundfont_ui()
+        self.soundfont_selected.emit(path)
 
     def _on_open_midi(self):
         start_dir = self._midi_dir or ""
@@ -616,6 +674,7 @@ class MainWindow(QMainWindow):
         self._synth_combo.setCurrentIndex(index)
         self._synth_combo.blockSignals(False)
         self._soundfont_btn.setEnabled(name == "SoundFont")
+        self._refresh_soundfont_ui()
 
     def set_instrument_selection(self, name: str):
         index = self._instrument_combo.findText(name)
@@ -624,6 +683,25 @@ class MainWindow(QMainWindow):
         self._instrument_combo.blockSignals(True)
         self._instrument_combo.setCurrentIndex(index)
         self._instrument_combo.blockSignals(False)
+        self._refresh_soundfont_ui()
+
+    def set_soundfont_options(self, instrument: str, options: list[tuple[str, str]], selected_path: str | None):
+        self._instrument_soundfont_options[instrument] = options
+        self._instrument_selected_soundfont[instrument] = selected_path
+        if selected_path:
+            self._instrument_soundfonts[instrument] = selected_path
+        else:
+            self._instrument_soundfonts.pop(instrument, None)
+        self._refresh_soundfont_ui()
+
+    def set_instrument_soundfont_path(self, instrument: str, path: str | None):
+        if path:
+            self._instrument_soundfonts[instrument] = path
+            self._instrument_selected_soundfont[instrument] = path
+        else:
+            self._instrument_soundfonts.pop(instrument, None)
+            self._instrument_selected_soundfont[instrument] = None
+        self._refresh_soundfont_ui()
 
     def set_midi_status(self, connected: bool, name: str = ""):
         if connected:

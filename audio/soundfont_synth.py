@@ -43,7 +43,11 @@ class SoundFontSynth:
 
     INSTRUMENT_PRESETS = {
         "Piano": (0, 0),   # Acoustic Grand Piano
-        "Guitar": (0, 24),  # Nylon Acoustic Guitar
+        "Guitar": (0, 27),  # Clean Electric Guitar
+    }
+    INSTRUMENT_PRESET_FALLBACKS = {
+        "Piano": [(0, 0), (0, 1), (0, 2)],
+        "Guitar": [(0, 27), (0, 26), (0, 24), (0, 25), (0, 0)],
     }
     INSTRUMENT_MIX = {
         "Piano": {"cc7": 112, "cc11": 110, "cc74": 64},
@@ -92,8 +96,23 @@ class SoundFontSynth:
         self._instrument = instrument if instrument in self.INSTRUMENT_PRESETS else "Piano"
         if self._sfid is None:
             return
-        bank, preset = self.INSTRUMENT_PRESETS[self._instrument]
-        self._fs.program_select(0, self._sfid, bank, preset)
+        candidates = self.INSTRUMENT_PRESET_FALLBACKS.get(
+            self._instrument,
+            [self.INSTRUMENT_PRESETS[self._instrument]],
+        )
+        for bank, preset in candidates:
+            try:
+                status = self._fs.program_select(0, self._sfid, bank, preset)
+            except Exception:
+                continue
+            # pyfluidsynth variants may return 0 or None on success.
+            if status in (0, None):
+                break
+        else:
+            # Last-resort attempt with the primary preset.
+            primary_bank, primary_preset = self.INSTRUMENT_PRESETS[self._instrument]
+            self._fs.program_select(0, self._sfid, primary_bank, primary_preset)
+
         mix = self.INSTRUMENT_MIX[self._instrument]
         self._fs.cc(0, 7, int(mix["cc7"]))     # channel volume
         self._fs.cc(0, 11, int(mix["cc11"]))   # expression

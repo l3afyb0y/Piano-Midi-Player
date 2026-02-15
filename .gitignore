@@ -16,3 +16,6 @@ src/
 Piano-Midi-Player/
 *.pkg.tar.zst
 .directory
+freepats-*.7z
+soundfonts/*-CC0.txt
+soundfonts/*-readme.txt
