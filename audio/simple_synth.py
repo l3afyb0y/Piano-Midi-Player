@@ -1,9 +1,12 @@
 """Simple additive synthesizer with switchable instrument profiles."""
 
 import threading
+import queue
 import numpy as np
 from dataclasses import dataclass
 from typing import Dict
+
+from piano_player.instruments import DEFAULT_INSTRUMENT as DEFAULT_INSTRUMENT_KEY, normalize_instrument
 
 
 @dataclass
@@ -61,14 +64,16 @@ class SimpleSynth:
         },
     }
 
-    DEFAULT_INSTRUMENT = "Piano"
-    LIMITER_TARGET_PEAK = 0.92
-    LIMITER_ATTACK = 0.30
+    DEFAULT_INSTRUMENT = DEFAULT_INSTRUMENT_KEY
+    LIMITER_TARGET_PEAK = 0.88
+    LIMITER_ATTACK = 0.68
     LIMITER_RELEASE = 0.08
     POLYPHONY_COMPENSATION = 0.10
     MIX_GAIN_ATTACK = 0.26
     MIX_GAIN_RELEASE = 0.06
     MAX_VOICES = 88
+    DENORMAL_CUTOFF = 1e-12
+    SATURATION_DRIVE = 1.0
 
     def __init__(self, sample_rate: int = 44100, instrument: str = DEFAULT_INSTRUMENT):
         self.sample_rate = sample_rate
@@ -76,6 +81,9 @@ class SimpleSynth:
         self._sustain = False
         self._sustained_notes: set = set()
         self._lock = threading.Lock()
+        self._event_queue = queue.SimpleQueue()
+        self._cached_offsets = np.zeros(0, dtype=np.float32)
+        self._cached_offsets_n = 0
         self._limiter_gain = 1.0
         self._mix_gain = 1.0
         self._instrument = self.DEFAULT_INSTRUMENT
@@ -96,28 +104,29 @@ class SimpleSynth:
         self._hp_prev_x = 0.0
         self._hp_prev_y = 0.0
         self._lp_prev_y = 0.0
-        self._rng = np.random.default_rng()
         self.set_instrument(instrument)
 
     def set_instrument(self, instrument: str):
-        profile = self.INSTRUMENTS.get(instrument, self.INSTRUMENTS[self.DEFAULT_INSTRUMENT])
-        self._instrument = instrument if instrument in self.INSTRUMENTS else self.DEFAULT_INSTRUMENT
-        self._attack = float(profile["attack"])
-        self._decay = float(profile["decay"])
-        self._sustain_level = float(profile["sustain_level"])
-        self._release = float(profile["release"])
-        self._pedal_release = float(profile["pedal_release"])
-        self._gain = float(profile["gain"])
-        self._harmonics = list(profile["harmonics"])
-        self._poly_comp = float(profile.get("poly_comp", self.POLYPHONY_COMPENSATION))
-        self._low_balance_hz = float(profile.get("low_balance_hz", 180.0))
-        self._low_min_gain = float(profile.get("low_min_gain", 0.6))
-        self._hp_hz = float(profile.get("hp_hz", 30.0))
-        self._lp_hz = float(profile.get("lp_hz", 7000.0))
-        self._recompute_filter_coeffs()
-        self._hp_prev_x = 0.0
-        self._hp_prev_y = 0.0
-        self._lp_prev_y = 0.0
+        with self._lock:
+            selected = normalize_instrument(instrument)
+            profile = self.INSTRUMENTS.get(selected, self.INSTRUMENTS[self.DEFAULT_INSTRUMENT])
+            self._instrument = selected
+            self._attack = float(profile["attack"])
+            self._decay = float(profile["decay"])
+            self._sustain_level = float(profile["sustain_level"])
+            self._release = float(profile["release"])
+            self._pedal_release = float(profile["pedal_release"])
+            self._gain = float(profile["gain"])
+            self._harmonics = list(profile["harmonics"])
+            self._poly_comp = float(profile.get("poly_comp", self.POLYPHONY_COMPENSATION))
+            self._low_balance_hz = float(profile.get("low_balance_hz", 180.0))
+            self._low_min_gain = float(profile.get("low_min_gain", 0.6))
+            self._hp_hz = float(profile.get("hp_hz", 30.0))
+            self._lp_hz = float(profile.get("lp_hz", 7000.0))
+            self._recompute_filter_coeffs()
+            self._hp_prev_x = 0.0
+            self._hp_prev_y = 0.0
+            self._lp_prev_y = 0.0
 
     @property
     def instrument(self) -> str:
@@ -132,55 +141,30 @@ class SimpleSynth:
 
     def note_on(self, note_number: int, velocity: int):
         """Start playing a note."""
-        frequency = 440.0 * (2.0 ** ((note_number - 69) / 12.0))
-        random_phase = float(self._rng.random()) / frequency
-        with self._lock:
-            if len(self._notes) >= self.MAX_VOICES:
-                self._steal_voice()
-            self._notes[note_number] = Note(
-                frequency=frequency,
-                velocity=velocity / 127.0,
-                phase=random_phase,
-                envelope=0.0,
-                stage="attack",
-                released=False,
-            )
+        self._event_queue.put(("note_on", int(note_number), int(velocity)))
 
     def note_off(self, note_number: int):
         """Release a note (or hold if sustain is on)."""
-        with self._lock:
-            if note_number in self._notes:
-                note = self._notes[note_number]
-                note.released = True
-                if self._sustain:
-                    self._sustained_notes.add(note_number)
-                    note.stage = "pedal"
-                else:
-                    note.stage = "release"
+        self._event_queue.put(("note_off", int(note_number), 0))
 
     def sustain_on(self):
         """Enable sustain pedal."""
-        with self._lock:
-            self._sustain = True
+        self._event_queue.put(("sustain", 1, 0))
 
     def sustain_off(self):
         """Disable sustain pedal and release held notes."""
-        with self._lock:
-            self._sustain = False
-            for note_num in self._sustained_notes:
-                if note_num in self._notes:
-                    self._notes[note_num].released = True
-                    self._notes[note_num].stage = "release"
-            self._sustained_notes.clear()
+        self._event_queue.put(("sustain", 0, 0))
 
     def generate(self, num_samples: int) -> np.ndarray:
         """Generate audio samples."""
         with self._lock:
+            self._drain_event_queue_locked()
             buffer = np.zeros(num_samples, dtype=np.float32)
             notes_to_remove = []
+            offsets = self._time_offsets(num_samples)
 
             for note_num, note in self._notes.items():
-                note_buffer = self._generate_note(note, num_samples)
+                note_buffer = self._generate_note(note, offsets)
                 buffer += note_buffer
 
                 if note.stage == "off":
@@ -206,7 +190,71 @@ class SimpleSynth:
 
             buffer = self._apply_limiter(buffer)
             buffer = self._apply_output_filter(buffer)
+            buffer = self._apply_saturation(buffer)
             return buffer
+
+    def _time_offsets(self, num_samples: int) -> np.ndarray:
+        if num_samples != self._cached_offsets_n:
+            self._cached_offsets = (np.arange(num_samples, dtype=np.float32) / self.sample_rate)
+            self._cached_offsets_n = num_samples
+        return self._cached_offsets
+
+    def _drain_event_queue_locked(self):
+        while True:
+            try:
+                event_type, a, b = self._event_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            if event_type == "note_on":
+                note_number = int(a)
+                velocity_norm = max(1, min(127, int(b))) / 127.0
+                frequency = 440.0 * (2.0 ** ((note_number - 69) / 12.0))
+                existing = self._notes.get(note_number)
+                if existing is not None:
+                    # Retrigger in-place to avoid hard discontinuities when repeating same note.
+                    existing.velocity = velocity_norm
+                    existing.released = False
+                    if existing.envelope < 1.0:
+                        existing.stage = "attack"
+                    else:
+                        existing.stage = "decay"
+                    self._sustained_notes.discard(note_number)
+                    continue
+
+                if len(self._notes) >= self.MAX_VOICES:
+                    self._steal_voice()
+                self._notes[note_number] = Note(
+                    frequency=frequency,
+                    velocity=velocity_norm,
+                    # Start at a zero crossing to prevent onset clicks.
+                    phase=0.0,
+                    envelope=0.0,
+                    stage="attack",
+                    released=False,
+                )
+                continue
+
+            if event_type == "note_off":
+                note_number = int(a)
+                if note_number in self._notes:
+                    note = self._notes[note_number]
+                    note.released = True
+                    if self._sustain:
+                        self._sustained_notes.add(note_number)
+                        note.stage = "pedal"
+                    else:
+                        note.stage = "release"
+                continue
+
+            if event_type == "sustain":
+                self._sustain = bool(a)
+                if not self._sustain:
+                    for note_num in self._sustained_notes:
+                        if note_num in self._notes:
+                            self._notes[note_num].released = True
+                            self._notes[note_num].stage = "release"
+                    self._sustained_notes.clear()
 
     def _steal_voice(self):
         if not self._notes:
@@ -234,25 +282,35 @@ class SimpleSynth:
     def active_notes_count(self) -> int:
         """Return number of currently active notes."""
         with self._lock:
+            self._drain_event_queue_locked()
             return len(self._notes)
 
-    def _generate_note(self, note: Note, num_samples: int) -> np.ndarray:
+    def _generate_note(self, note: Note, offsets: np.ndarray) -> np.ndarray:
         """Generate samples for a single note with vectorized oscillators."""
+        num_samples = int(len(offsets))
         envelope = self._build_envelope_block(note, num_samples)
         if note.stage == "off" and not np.any(envelope):
             return np.zeros(num_samples, dtype=np.float32)
 
-        t = note.phase + (np.arange(num_samples, dtype=np.float32) / self.sample_rate)
+        t = note.phase + offsets
         waveform = np.zeros(num_samples, dtype=np.float32)
         # Darken lower notes to avoid buzzy bass buildup under sustain.
         brightness = float(np.clip(note.frequency / 1000.0, 0.30, 1.0))
         low_weight = float(np.clip(note.frequency / self._low_balance_hz, self._low_min_gain, 1.0))
+        nyquist = 0.48 * float(self.sample_rate)
         for harmonic_mult, harmonic_amp in self._harmonics:
             freq = note.frequency * harmonic_mult
+            # Band-limit additive partials to avoid high-note aliasing crackle.
+            if freq >= nyquist:
+                continue
             harmonic_tilt = brightness ** max(0.0, harmonic_mult - 1.0)
             waveform += (harmonic_amp * harmonic_tilt) * np.sin(2.0 * np.pi * freq * t)
 
+        # Keep phase bounded for long sessions to preserve numeric precision.
         note.phase += num_samples / self.sample_rate
+        period = 1.0 / max(1e-9, note.frequency)
+        if note.phase >= period:
+            note.phase %= period
         return (waveform * envelope * note.velocity * self._gain * low_weight).astype(np.float32)
 
     def _apply_limiter(self, buffer: np.ndarray) -> np.ndarray:
@@ -289,10 +347,26 @@ class SimpleSynth:
             prev_hp = hp
             prev_lp = lp
 
+        cutoff = self.DENORMAL_CUTOFF
+        if abs(prev_x) < cutoff:
+            prev_x = 0.0
+        if abs(prev_hp) < cutoff:
+            prev_hp = 0.0
+        if abs(prev_lp) < cutoff:
+            prev_lp = 0.0
+
         self._hp_prev_x = prev_x
         self._hp_prev_y = prev_hp
         self._lp_prev_y = prev_lp
+        out[np.abs(out) < cutoff] = 0.0
         return out
+
+    def _apply_saturation(self, buffer: np.ndarray) -> np.ndarray:
+        """Apply subtle soft clipping to suppress hard digital clipping transients."""
+        drive = float(self.SATURATION_DRIVE)
+        if drive <= 1.0:
+            return buffer
+        return np.tanh(buffer * drive).astype(np.float32) / drive
 
     def _build_envelope_block(self, note: Note, num_samples: int) -> np.ndarray:
         """Generate ADSR envelope values for this buffer and update note state."""

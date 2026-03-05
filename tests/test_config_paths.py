@@ -11,6 +11,10 @@ def _write_fake_sf2(path: Path):
     path.write_bytes(b"RIFF\x04\x00\x00\x00sfbkDATA")
 
 
+def _write_fake_sfz(path: Path):
+    path.write_text("<control>\n<region> sample=dummy.wav key=60\n", encoding="utf-8")
+
+
 class ConfigPathResolutionTests(unittest.TestCase):
     def test_saved_path_is_used(self):
         path = config.resolve_midi_directory("~/custom-midi")
@@ -37,6 +41,8 @@ class ConfigPathResolutionTests(unittest.TestCase):
             overrides = {"Piano": [str(piano_sf)], "Guitar": []}
             with patch.object(config, "INSTRUMENT_ENV_OVERRIDES", overrides), patch.object(
                 config, "COMMON_SOUNDFONT_LOCATIONS", [str(common_sf)]
+            ), patch.object(
+                config, "_soundfont_search_dirs", return_value=[Path(tmpdir)]
             ):
                 result = config.find_default_soundfont("Piano")
 
@@ -56,6 +62,8 @@ class ConfigPathResolutionTests(unittest.TestCase):
                 config, "COMMON_SOUNDFONT_LOCATIONS", []
             ), patch.object(config, "INSTRUMENT_FILENAME_HINTS", hints), patch.object(
                 config, "SOUNDFONTS_DIR", sf_dir
+            ), patch.object(
+                config, "_soundfont_search_dirs", return_value=[sf_dir]
             ):
                 result = config.find_default_soundfont("Guitar")
 
@@ -69,7 +77,9 @@ class ConfigPathResolutionTests(unittest.TestCase):
             overrides = {"Piano": [str(sf)], "Guitar": []}
             with patch.object(config, "INSTRUMENT_ENV_OVERRIDES", overrides), patch.object(
                 config, "COMMON_SOUNDFONT_LOCATIONS", [str(sf)]
-            ), patch.object(config, "SOUNDFONTS_DIR", Path(tmpdir)):
+            ), patch.object(config, "SOUNDFONTS_DIR", Path(tmpdir)), patch.object(
+                config, "_soundfont_search_dirs", return_value=[Path(tmpdir)]
+            ):
                 candidates = config.list_soundfont_candidates("Piano")
 
             self.assertEqual(candidates, [str(sf)])
@@ -81,10 +91,43 @@ class ConfigPathResolutionTests(unittest.TestCase):
 
             with patch.object(config, "COMMON_SOUNDFONT_LOCATIONS", [str(bad_sf)]), patch.object(
                 config, "INSTRUMENT_ENV_OVERRIDES", {"Piano": [], "Guitar": []}
-            ), patch.object(config, "SOUNDFONTS_DIR", Path(tmpdir)):
+            ), patch.object(config, "SOUNDFONTS_DIR", Path(tmpdir)), patch.object(
+                config, "_soundfont_search_dirs", return_value=[Path(tmpdir)]
+            ):
                 candidates = config.list_soundfont_candidates("Piano")
 
             self.assertEqual(candidates, [])
+
+    def test_valid_sfz_file_is_accepted(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sfz = Path(tmpdir) / "piano.sfz"
+            _write_fake_sfz(sfz)
+
+            with patch.object(config, "COMMON_SOUNDFONT_LOCATIONS", [str(sfz)]), patch.object(
+                config, "INSTRUMENT_ENV_OVERRIDES", {"Piano": [], "Guitar": []}
+            ), patch.object(config, "SOUNDFONTS_DIR", Path(tmpdir)), patch.object(
+                config, "_soundfont_search_dirs", return_value=[Path(tmpdir)]
+            ):
+                candidates = config.list_soundfont_candidates("Piano")
+
+            self.assertEqual(candidates, [str(sfz)])
+
+    def test_nested_sfz_file_is_discovered(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sf_dir = Path(tmpdir)
+            nested = sf_dir / "SalamanderGrandPiano-SFZ+FLAC-V3+20200602"
+            nested.mkdir(parents=True)
+            sfz = nested / "SalamanderGrandPiano-V3+20200602.sfz"
+            _write_fake_sfz(sfz)
+
+            overrides = {"Piano": [], "Guitar": []}
+            with patch.object(config, "INSTRUMENT_ENV_OVERRIDES", overrides), patch.object(
+                config, "COMMON_SOUNDFONT_LOCATIONS", []
+            ), patch.object(config, "SOUNDFONTS_DIR", sf_dir):
+                with patch.object(config, "_soundfont_search_dirs", return_value=[sf_dir]):
+                    candidates = config.list_soundfont_candidates("Piano")
+
+            self.assertIn(str(sfz), candidates)
 
 
 if __name__ == "__main__":

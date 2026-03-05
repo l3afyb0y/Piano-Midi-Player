@@ -15,6 +15,7 @@ class Metronome(QObject):
         super().__init__()
         self.sample_rate = sample_rate
         self._bpm = 120
+        self._volume = 0.45
         self._running = False
         self._click_callback = None
         self._beat_interval = 60.0 / self._bpm
@@ -35,20 +36,26 @@ class Metronome(QObject):
 
     def _generate_click(self, accent: bool) -> np.ndarray:
         """Generate a short click sound."""
-        duration = 0.03 if accent else 0.018
+        duration = 0.034 if accent else 0.024
         samples = int(self.sample_rate * duration)
         t = np.linspace(0, duration, samples, dtype=np.float32)
 
-        freq = 1700 if accent else 900  # Hz
-        envelope = np.exp(-t * 50)  # Quick exponential decay
-        amplitude = 0.78 if accent else 0.30
-        click = np.sin(2 * np.pi * freq * t) * envelope * amplitude
+        freq = 1080 if accent else 760  # Hz
+        envelope = np.exp(-t * (38.0 if accent else 34.0))
+        amplitude = (0.55 if accent else 0.32) * self._volume
+        fundamental = np.sin(2 * np.pi * freq * t)
+        overtone = np.sin(2 * np.pi * (freq * 2.0) * t) * 0.20
+        click = (fundamental + overtone) * envelope * amplitude
 
         return click.astype(np.float32)
 
     @property
     def bpm(self) -> int:
         return self._bpm
+
+    @property
+    def volume(self) -> float:
+        return self._volume
 
     @bpm.setter
     def bpm(self, value: int):
@@ -58,6 +65,12 @@ class Metronome(QObject):
             now = time.perf_counter()
             self._next_beat_at = now + self._beat_interval
             self._schedule_next_beat(now)
+
+    @volume.setter
+    def volume(self, value: float):
+        self._volume = max(0.0, min(1.0, float(value)))
+        self._click_samples = self._generate_click(accent=False)
+        self._accent_click_samples = self._generate_click(accent=True)
 
     def set_click_callback(self, callback):
         """Set callback to play click sound. Callback receives numpy array."""

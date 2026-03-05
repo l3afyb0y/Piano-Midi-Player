@@ -7,7 +7,9 @@ pkgrel=1
 pkgdesc='Desktop MIDI piano player/editor with recording and falling-note practice view'
 arch=('any')
 url='https://github.com/l3afyb0y/Piano-Midi-Player'
-license=('MIT')
+license=('MIT' 'CC0-1.0' 'CC-BY-3.0')
+provides=('piano-player')
+conflicts=('piano-player')
 depends=(
   'python'
   'python-pyqt6'
@@ -15,6 +17,7 @@ depends=(
   'python-mido'
   'python-rtmidi'
   'portaudio'
+  'sfizz-lib'
 )
 optdepends=(
   'python-sounddevice: python sounddevice module (AUR) for realtime audio backend'
@@ -24,13 +27,13 @@ optdepends=(
 makedepends=('git' 'p7zip')
 source=(
   "git+${url}.git"
-  "freepats-upright-piano-small-20190703.7z::https://freepats.zenvoid.org/Piano/UprightPianoKW/UprightPianoKW-small-SF2-20190703.7z"
-  "freepats-electric-guitar-clean-small-20220911.7z::https://freepats.zenvoid.org/ElectricGuitar/FSBS-EGuitar/EGuitarFSBS-bridge-clean-small-SF2-20220911.7z"
+  "freepats-salamander-grand-piano-sfz-flac-20200602.tar.gz::https://freepats.zenvoid.org/Piano/SalamanderGrandPiano/SalamanderGrandPiano-SFZ+FLAC-V3+20200602.tar.gz"
+  "freepats-electric-guitar-clean-sfz-flac-20220911.7z::https://freepats.zenvoid.org/ElectricGuitar/FSBS-EGuitar/EGuitarFSBS-bridge-clean-SFZ+FLAC-20220911.7z"
 )
 sha256sums=(
   'SKIP'
-  '3bd025e7c2ffa9e6f3f99215ce383c9cebbac991cfbf9be1453cdb4328ec3492'
-  '61f14af225c00d0621a57033f910ecdd8c2916752b7fd111744fa7eee3f05932'
+  'b7760e168494cf095344e217b0af013fc449ad033abbbdf1c65211cf11dc038b'
+  'd371496bdb0622444e8956a65e85953257ef9eae9bb7cb6e675512e61deac17b'
 )
 
 pkgver() {
@@ -58,21 +61,19 @@ package() {
   rm -rf "${_sf_tmp}"
   mkdir -p "${_sf_tmp}"
 
-  7z x -y "${srcdir}/freepats-upright-piano-small-20190703.7z" "-o${_sf_tmp}" >/dev/null
-  7z x -y "${srcdir}/freepats-electric-guitar-clean-small-20220911.7z" "-o${_sf_tmp}" >/dev/null
+  tar -xzf "${srcdir}/freepats-salamander-grand-piano-sfz-flac-20200602.tar.gz" -C "${_sf_tmp}"
+  7z x -y "${srcdir}/freepats-electric-guitar-clean-sfz-flac-20220911.7z" "-o${_sf_tmp}" >/dev/null
 
-  install -Dm644 "${_sf_tmp}/UprightPianoKW-small-SF2-20190703/UprightPianoKW-small-20190703.sf2" \
-    "${pkgdir}/usr/share/${_pkgname}/soundfonts/UprightPianoKW-small-20190703.sf2"
-  install -Dm644 "${_sf_tmp}/EGuitarFSBS-bridge-clean-small-SF2-20220911/EGuitarFSBS-bridge-clean-small-20220911.sf2" \
-    "${pkgdir}/usr/share/${_pkgname}/soundfonts/EGuitarFSBS-bridge-clean-small-20220911.sf2"
+  cp -a "${_sf_tmp}/SalamanderGrandPiano-SFZ+FLAC-V3+20200602" \
+    "${pkgdir}/usr/share/${_pkgname}/soundfonts/"
+  cp -a "${_sf_tmp}/EGuitarFSBS-bridge-clean-SFZ+FLAC-20220911" \
+    "${pkgdir}/usr/share/${_pkgname}/soundfonts/"
 
-  install -Dm644 "${_sf_tmp}/UprightPianoKW-small-SF2-20190703/cc0.txt" \
-    "${pkgdir}/usr/share/doc/${pkgname}/soundfonts/UprightPianoKW-CC0.txt"
-  install -Dm644 "${_sf_tmp}/EGuitarFSBS-bridge-clean-small-SF2-20220911/cc0.txt" \
+  install -Dm644 "${_sf_tmp}/SalamanderGrandPiano-SFZ+FLAC-V3+20200602/readme.txt" \
+    "${pkgdir}/usr/share/doc/${pkgname}/soundfonts/SalamanderGrandPiano-readme-CC-BY-3.0.txt"
+  install -Dm644 "${_sf_tmp}/EGuitarFSBS-bridge-clean-SFZ+FLAC-20220911/cc0.txt" \
     "${pkgdir}/usr/share/doc/${pkgname}/soundfonts/EGuitarFSBS-clean-CC0.txt"
-  install -Dm644 "${_sf_tmp}/UprightPianoKW-small-SF2-20190703/readme.txt" \
-    "${pkgdir}/usr/share/doc/${pkgname}/soundfonts/UprightPianoKW-readme.txt"
-  install -Dm644 "${_sf_tmp}/EGuitarFSBS-bridge-clean-small-SF2-20220911/readme.txt" \
+  install -Dm644 "${_sf_tmp}/EGuitarFSBS-bridge-clean-SFZ+FLAC-20220911/readme.txt" \
     "${pkgdir}/usr/share/doc/${pkgname}/soundfonts/EGuitarFSBS-clean-readme.txt"
 
   if [ -f soundfonts/README.md ]; then
@@ -80,7 +81,7 @@ package() {
       "${pkgdir}/usr/share/doc/${pkgname}/soundfonts/README-project.txt"
   fi
 
-  for sf in soundfonts/*.sf2; do
+  for sf in soundfonts/*.sf2 soundfonts/*.sfz; do
     if [ -f "${sf}" ]; then
       install -Dm644 "${sf}" "${pkgdir}/usr/share/${_pkgname}/soundfonts/$(basename "${sf}")"
     fi
@@ -100,4 +101,5 @@ EOF
   sed -i 's|^Exec=.*|Exec=piano-player|' "${pkgdir}/usr/share/applications/piano-player.desktop"
   install -Dm644 assets/piano-player.svg "${pkgdir}/usr/share/icons/hicolor/scalable/apps/piano-player.svg"
   install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 THIRD_PARTY_LICENSES.md "${pkgdir}/usr/share/doc/${pkgname}/THIRD_PARTY_LICENSES.md"
 }

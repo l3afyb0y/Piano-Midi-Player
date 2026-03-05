@@ -6,6 +6,23 @@ from audio.simple_synth import SimpleSynth
 
 
 class SimpleSynthTests(unittest.TestCase):
+    def test_note_on_starts_at_zero_crossing_to_reduce_clicks(self):
+        synth = SimpleSynth(sample_rate=44100, instrument="Piano")
+        synth.note_on(60, 100)
+
+        first = synth.generate(1)
+        self.assertAlmostEqual(float(first[0]), 0.0, places=8)
+
+    def test_retrigger_same_note_keeps_single_voice(self):
+        synth = SimpleSynth(sample_rate=44100, instrument="Piano")
+        synth.note_on(60, 100)
+        for _ in range(4):
+            synth.generate(128)
+
+        synth.note_on(60, 120)
+        self.assertEqual(synth.active_notes_count(), 1)
+        self.assertEqual(len(synth._notes), 1)
+
     def test_sustained_note_decays_while_pedal_held(self):
         synth = SimpleSynth(sample_rate=44100, instrument="Piano")
         synth.sustain_on()

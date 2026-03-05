@@ -2,9 +2,12 @@
 
 import contextlib
 import os
+import queue
 import threading
 import numpy as np
 from typing import Optional
+
+from piano_player.instruments import DEFAULT_INSTRUMENT, normalize_instrument
 
 _FLUIDSYNTH_MODULE = None
 
@@ -66,9 +69,10 @@ class SoundFontSynth:
         with _suppress_stderr_fd():
             self._fs = fluidsynth.Synth(samplerate=float(sample_rate))
         self._sfid: Optional[int] = None
-        self._instrument = "Piano"
+        self._instrument = DEFAULT_INSTRUMENT
         self._notes: set = set()  # Track active notes for UI
         self._notes_lock = threading.Lock()
+        self._event_queue: queue.SimpleQueue = queue.SimpleQueue()
         self._output_gain = 1.0
         # Not using FluidSynth's own audio driver - we pull samples manually
         # Keep FluidSynth global gain conservative to avoid preset-dependent clipping.
@@ -93,7 +97,7 @@ class SoundFontSynth:
             return False
 
     def set_instrument(self, instrument: str):
-        self._instrument = instrument if instrument in self.INSTRUMENT_PRESETS else "Piano"
+        self._instrument = normalize_instrument(instrument)
         if self._sfid is None:
             return
         candidates = self.INSTRUMENT_PRESET_FALLBACKS.get(
@@ -120,26 +124,45 @@ class SoundFontSynth:
 
     def note_on(self, note: int, velocity: int):
         """Start playing a note."""
-        self._fs.noteon(0, note, velocity)
-        with self._notes_lock:
-            self._notes.add(note)
+        note_number = max(0, min(127, int(note)))
+        midi_velocity = max(1, min(127, int(velocity)))
+        self._event_queue.put(("note_on", note_number, midi_velocity))
 
     def note_off(self, note: int):
         """Stop playing a note."""
-        self._fs.noteoff(0, note)
-        with self._notes_lock:
-            self._notes.discard(note)
+        note_number = max(0, min(127, int(note)))
+        self._event_queue.put(("note_off", note_number, 0))
 
     def sustain_on(self):
         """Enable sustain pedal."""
-        self._fs.cc(0, 64, 127)
+        self._event_queue.put(("sustain", 1, 0))
 
     def sustain_off(self):
         """Disable sustain pedal."""
-        self._fs.cc(0, 64, 0)
+        self._event_queue.put(("sustain", 0, 0))
+
+    def _drain_event_queue(self):
+        while True:
+            try:
+                event_type, a, b = self._event_queue.get_nowait()
+            except queue.Empty:
+                break
+            if event_type == "note_on":
+                self._fs.noteon(0, int(a), int(b))
+                with self._notes_lock:
+                    self._notes.add(int(a))
+                continue
+            if event_type == "note_off":
+                self._fs.noteoff(0, int(a))
+                with self._notes_lock:
+                    self._notes.discard(int(a))
+                continue
+            if event_type == "sustain":
+                self._fs.cc(0, 64, 127 if int(a) else 0)
 
     def generate(self, num_samples: int) -> np.ndarray:
         """Generate audio samples."""
+        self._drain_event_queue()
         # FluidSynth generates interleaved stereo int16
         samples = self._fs.get_samples(num_samples)
         # Convert to numpy float32 and mix stereo to mono
@@ -169,5 +192,6 @@ class SoundFontSynth:
 
     def active_notes_count(self) -> int:
         """Return number of currently active notes."""
+        self._drain_event_queue()
         with self._notes_lock:
             return len(self._notes)

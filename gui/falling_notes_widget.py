@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 import math
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QWidget, QMenu
 from PyQt6.QtCore import QTimer, pyqtSignal, Qt
 from PyQt6.QtGui import QPainter, QColor, QBrush, QPen
 
@@ -33,6 +33,7 @@ class FallingNotesWidget(QWidget):
     playback_finished = pyqtSignal()
     time_changed = pyqtSignal(float)       # current time for slider sync
     events_changed = pyqtSignal()
+    view_window_changed = pyqtSignal(float)
 
     # Piano range
     MIN_NOTE = 21  # A0
@@ -162,6 +163,22 @@ class FallingNotesWidget(QWidget):
     def set_bpm(self, bpm: int):
         self._bpm = max(20, min(300, bpm))
         self.update()
+
+    def set_visible_seconds(self, seconds: float):
+        """Set visible time window for the roll (higher = slower visual flow)."""
+        try:
+            value = float(seconds)
+        except (TypeError, ValueError):
+            return
+        clamped = max(2.0, min(16.0, value))
+        if abs(clamped - self._visible_seconds) < 1e-6:
+            return
+        self._visible_seconds = clamped
+        self.view_window_changed.emit(float(self._visible_seconds))
+        self.update()
+
+    def get_visible_seconds(self) -> float:
+        return float(self._visible_seconds)
 
     def set_snap_enabled(self, enabled: bool):
         self._snap_enabled = enabled
@@ -373,6 +390,67 @@ class FallingNotesWidget(QWidget):
         self.events_changed.emit()
         self.update()
 
+    def _create_note_at(self, note: int, start_time: float) -> NoteEvent:
+        """Create and insert a note using current snap/grid settings."""
+        start_time = max(0.0, start_time)
+        start_time = self._snap_time(start_time)
+        default_duration = self.DEFAULT_NOTE_DURATION
+        if self._snap_enabled:
+            beat_duration = 60.0 / max(1, self._bpm)
+            step = beat_duration / max(1, self._snap_division)
+            if step > 0:
+                default_duration = max(default_duration, step)
+
+        note_event = NoteEvent(
+            note=note,
+            start_time=start_time,
+            duration=default_duration,
+            velocity=self.DEFAULT_VELOCITY,
+        )
+        self._notes.append(note_event)
+        self._notes.sort(key=lambda e: e.start_time)
+        self._selected_ids = {id(note_event)}
+        self._primary_id = id(note_event)
+        self._reset_active_state(emit_audio=False)
+        self._recalculate_total_duration()
+        self.events_changed.emit()
+        self.update()
+        return note_event
+
+    def _show_context_menu(self, global_pos, x: float, y: float):
+        menu = QMenu(self)
+
+        clicked_idx = self._hit_test_note_index(x, y)
+        clicked_note = self._note_at_x(x, self.width())
+
+        add_note_action = menu.addAction("Add Note Here")
+        add_note_action.setEnabled(clicked_note is not None)
+
+        delete_note_action = None
+        if clicked_idx is not None:
+            delete_note_action = menu.addAction("Delete Note")
+
+        delete_selected_action = None
+        if self._selected_ids:
+            delete_selected_action = menu.addAction(f"Delete Selected ({len(self._selected_ids)})")
+
+        chosen = menu.exec(global_pos)
+        if chosen is None:
+            return
+
+        if chosen == add_note_action and clicked_note is not None:
+            start_time = self._time_at_y(y, self.height())
+            self._create_note_at(clicked_note, start_time)
+            return
+
+        if delete_note_action is not None and chosen == delete_note_action and clicked_idx is not None:
+            self._delete_note_index(clicked_idx)
+            return
+
+        if delete_selected_action is not None and chosen == delete_selected_action:
+            self._delete_selected()
+            return
+
     def _start_drag(self, mode: str, x: float, y: float, anchor_id: int | None = None):
         self._drag_mode = mode
         self._drag_start_pos = (x, y)
@@ -507,10 +585,8 @@ class FallingNotesWidget(QWidget):
             return
 
         if event.button() == Qt.MouseButton.RightButton:
-            idx = self._hit_test_note_index(x, y)
-            if idx is not None:
-                self._delete_note_index(idx)
-                return
+            self._show_context_menu(event.globalPosition().toPoint(), x, y)
+            return
 
         return super().mousePressEvent(event)
 
@@ -578,28 +654,7 @@ class FallingNotesWidget(QWidget):
             return super().mouseDoubleClickEvent(event)
 
         start_time = self._time_at_y(pos.y(), self.height())
-        start_time = max(0.0, start_time)
-        start_time = self._snap_time(start_time)
-        default_duration = self.DEFAULT_NOTE_DURATION
-        if self._snap_enabled:
-            beat_duration = 60.0 / max(1, self._bpm)
-            step = beat_duration / max(1, self._snap_division)
-            if step > 0:
-                default_duration = max(default_duration, step)
-        note_event = NoteEvent(
-            note=note,
-            start_time=start_time,
-            duration=default_duration,
-            velocity=self.DEFAULT_VELOCITY,
-        )
-        self._notes.append(note_event)
-        self._notes.sort(key=lambda e: e.start_time)
-        self._selected_ids = {id(note_event)}
-        self._primary_id = id(note_event)
-        self._reset_active_state(emit_audio=False)
-        self._recalculate_total_duration()
-        self.events_changed.emit()
-        self.update()
+        self._create_note_at(note, start_time)
         return super().mouseDoubleClickEvent(event)
 
     def keyPressEvent(self, event):
@@ -616,6 +671,16 @@ class FallingNotesWidget(QWidget):
     def wheelEvent(self, event):
         if not self._notes:
             return super().wheelEvent(event)
+
+        modifiers = event.modifiers()
+        if modifiers & Qt.KeyboardModifier.ControlModifier:
+            delta = event.angleDelta().y() or event.pixelDelta().y()
+            if delta == 0:
+                return super().wheelEvent(event)
+            step = -0.4 if delta > 0 else 0.4
+            self.set_visible_seconds(self._visible_seconds + step)
+            event.accept()
+            return
 
         delta_y = event.pixelDelta().y()
         if delta_y == 0:
