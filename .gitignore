@@ -1,22 +1,41 @@
+# Python / tooling caches
 __pycache__/
 *.pyc
 .venv/
-*.sf2
-recordings/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+
+# Local IDE / shell artifacts
 .idea/
-*.egg-info/
-.worktrees/
+.directory
+
+# Build and packaging outputs
 build/
 dist/
-*.spec
-.pytest_cache/
-dev/
 pkg/
 src/
-Piano-Midi-Player/
+*.spec
 *.pkg.tar.zst
-.directory
+
+# Local worktrees and temporary sources
+.worktrees/
+Piano-Midi-Player/
+.benchmarks/
+
+# Local-only development area
+dev/
+docs/
+tests/
+requirements-dev.txt
+scripts/build_app.py
+scripts/self_test.py
+
+# Optional local assets/downloads
+recordings/
 freepats-*.7z
 freepats-*.tar.gz
+*.sf2
 soundfonts/*-CC0.txt
 soundfonts/*-readme.txt
